@@ -1,0 +1,338 @@
+// SPDX-FileCopyrightText: 2024 Phoenix R&D GmbH <hello@phnx.im>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+use futures::{SinkExt, StreamExt};
+use openmls_rust_crypto::RustCrypto;
+use openmls_sqlite_storage::{Codec, Connection, SqliteStorageProvider};
+use openmls_traits::OpenMlsProvider;
+use state_machine::{
+    client::{ClientHandshake, ClientHandshakeState},
+    initialize_storage,
+    server::{ServerHandshake, ServerHandshakeState},
+};
+use std::{borrow::Borrow, sync::Arc};
+use thiserror::Error;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    sync::Mutex,
+};
+use tokio_util::codec::{FramedRead, FramedWrite};
+use tracing::instrument;
+use uuid::Uuid;
+
+use crate::{
+    authentication::{leaf_certificate::LeafCertificateSigner, root_certificate::RootCertificate},
+    handshake::{ClientIdentity, CompletedHandshake, Handshake},
+    tls_aead::{codec::TlsFrameCodec, SecretUpdate, TrafficSecrets},
+};
+
+pub use state_machine::HandshakeError;
+
+mod messages;
+mod openmls_provider;
+mod persistence;
+mod state_machine;
+
+#[derive(Debug, Error)]
+pub enum MlsHandshakeError {
+    #[error("Decoding error")]
+    DecodingError,
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
+    #[error(transparent)]
+    HandshakeError(#[from] HandshakeError),
+    #[error("Perform a handshake before sending or receiving messages")]
+    Uninitialized,
+    #[error(transparent)]
+    Persistence(#[from] rusqlite::Error),
+    #[error(transparent)]
+    SqliteMigration(#[from] refinery::Error),
+}
+
+enum MlsHandshakeState {
+    None,
+    Client(Box<ClientHandshakeState>),
+    Server(ServerHandshakeState),
+}
+
+pub struct MlsHandshake {
+    leaf_signer: LeafCertificateSigner,
+    root_certificate: RootCertificate,
+    connection: Arc<Mutex<Connection>>,
+    state: MlsHandshakeState,
+}
+
+impl MlsHandshake {
+    pub fn new(
+        connection: Arc<Mutex<Connection>>,
+        leaf_signer: LeafCertificateSigner,
+        root_certificate: RootCertificate,
+    ) -> Self {
+        Self {
+            leaf_signer,
+            root_certificate,
+            connection,
+            state: MlsHandshakeState::None,
+        }
+    }
+}
+
+impl<T: AsyncWrite + Unpin, R: AsyncRead + Unpin> Handshake<T, R> for MlsHandshake {
+    type Error = MlsHandshakeError;
+    type Reader = FramedRead<R, TlsFrameCodec>;
+    type Writer = FramedWrite<T, TlsFrameCodec>;
+
+    fn initialize_storage(connection: &mut Connection) -> Result<(), Self::Error> {
+        initialize_storage(connection)?;
+        Ok(())
+    }
+
+    async fn server_handshake(
+        &mut self,
+        rx: &mut Self::Reader,
+        tx: &mut Self::Writer,
+    ) -> Result<(TrafficSecrets, ClientIdentity), MlsHandshakeError> {
+        let Some(Ok(first_message_bytes)) = rx.next().await else {
+            tracing::error!("Invalid handshake ClientHello");
+            return Err(MlsHandshakeError::DecodingError);
+        };
+        let mut connection = self.connection.lock().await;
+        let (state, traffic_secrets, client_identity, response_bytes) = ServerHandshake::start(
+            &mut connection,
+            &self.leaf_signer,
+            &self.root_certificate,
+            &first_message_bytes.data,
+        )?;
+        self.state = MlsHandshakeState::Server(state);
+
+        tx.send(&response_bytes).await?;
+
+        Ok((traffic_secrets, client_identity))
+    }
+
+    #[instrument(skip_all)]
+    async fn client_handshake(
+        &mut self,
+        rx: &mut Self::Reader,
+        tx: &mut Self::Writer,
+    ) -> Result<TrafficSecrets, MlsHandshakeError> {
+        let connection = self.connection.lock().await;
+
+        ClientHandshakeState::create_table(&connection)?;
+
+        // TODO: Check here if we can load a `ClientHandshakeState` from the database
+        // and resume the handshake.
+
+        let profile_id = Uuid::new_v4();
+        let (handshake_state, client_hello) = ClientHandshake::start(
+            &connection,
+            &self.leaf_signer,
+            self.root_certificate.clone(),
+            profile_id,
+        )?;
+        tx.send(&client_hello).await?;
+
+        // Wait for the server to return a welcome message
+        let Some(Ok(server_hello_bytes)) = rx.next().await else {
+            tracing::error!("Invalid handshake ServerHello");
+            return Err(MlsHandshakeError::DecodingError);
+        };
+
+        let (state, traffic_secrets) =
+            handshake_state.receive_server_hello(&connection, &server_hello_bytes.data)?;
+
+        state.store(&connection)?;
+
+        self.state = MlsHandshakeState::Client(Box::new(state));
+
+        Ok(traffic_secrets)
+    }
+}
+
+impl CompletedHandshake for MlsHandshake {
+    type Error = MlsHandshakeError;
+
+    fn epoch(&self) -> u64 {
+        match &self.state {
+            MlsHandshakeState::None => 0,
+            MlsHandshakeState::Client(client_handshake_state) => client_handshake_state.epoch(),
+            MlsHandshakeState::Server(server_handshake_state) => server_handshake_state.epoch(),
+        }
+    }
+
+    async fn update_handshake(&mut self) -> Result<(Option<SecretUpdate>, Vec<u8>), Self::Error> {
+        let mut connection = self.connection.lock().await;
+        match &mut self.state {
+            MlsHandshakeState::None => Err(MlsHandshakeError::Uninitialized),
+            MlsHandshakeState::Client(client_handshake_state) => {
+                let (client_secret, message_bytes) =
+                    client_handshake_state.update(&mut connection, &self.leaf_signer, false)?;
+                Ok((
+                    Some(SecretUpdate::ClientSecret(client_secret)),
+                    message_bytes,
+                ))
+            }
+            MlsHandshakeState::Server(server_handshake_state) => {
+                let message_bytes =
+                    server_handshake_state.update(&mut connection, &self.leaf_signer, false)?;
+                Ok((None, message_bytes))
+            }
+        }
+    }
+
+    async fn process_signaling_message(
+        &mut self,
+        message_bytes: &[u8],
+    ) -> Result<(Option<SecretUpdate>, Option<Vec<u8>>), Self::Error> {
+        let mut connection = self.connection.lock().await;
+        match &mut self.state {
+            MlsHandshakeState::None => Err(MlsHandshakeError::Uninitialized),
+            MlsHandshakeState::Client(client_handshake_state) => {
+                let (secret_update, message_bytes) = client_handshake_state
+                    .receive_signaling_message(&mut connection, &self.leaf_signer, message_bytes)?;
+                Ok((secret_update, message_bytes))
+            }
+            MlsHandshakeState::Server(server_handshake_state) => {
+                let (traffic_secrets, message_bytes) = server_handshake_state
+                    .receive_signaling_message(&mut connection, &self.leaf_signer, message_bytes)?;
+                Ok((Some(SecretUpdate::Both(traffic_secrets)), message_bytes))
+            }
+        }
+    }
+
+    async fn delete(&mut self) -> Result<(), Self::Error> {
+        let mut connection = self.connection.lock().await;
+        match &self.state {
+            MlsHandshakeState::None => (),
+            MlsHandshakeState::Client(client_handshake_state) => {
+                client_handshake_state.delete(&mut connection)?;
+            }
+            MlsHandshakeState::Server(server_handshake_state) => {
+                server_handshake_state.mls_session.delete(&connection)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::authentication::root_certificate::{RootCertificateSigner, SERVER_ROOT_IDENTITY};
+
+    use super::*;
+    use chrono::Utc;
+    use rand_chacha::ChaCha20Rng;
+    use rand_core::SeedableRng;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn mls_handshake() {
+        let (client_rx, server_tx) = tokio::io::duplex(1024);
+        let (server_rx, client_tx) = tokio::io::duplex(1024);
+
+        let mut client_framed_tx = FramedWrite::new(client_tx, TlsFrameCodec);
+        let mut server_framed_rx = FramedRead::new(server_rx, TlsFrameCodec);
+        let mut client_framed_rx = FramedRead::new(client_rx, TlsFrameCodec);
+        let mut server_framed_tx = FramedWrite::new(server_tx, TlsFrameCodec);
+
+        let seed_passphrase = [0u8; 32];
+        let now = Utc::now();
+        let rng = &mut ChaCha20Rng::from_seed(seed_passphrase);
+
+        let root_signer =
+            RootCertificateSigner::new_with_time_and_rng(now, rng, SERVER_ROOT_IDENTITY)
+                .expect("failed to create root signer");
+
+        let server_signer = root_signer
+            .issue_new_leaf_with_time_and_rng("server", now, rng)
+            .expect("failed to create server signer");
+        let client_signer = root_signer
+            .issue_new_leaf_with_time_and_rng("client", now, rng)
+            .expect("failed to create client signer");
+
+        let mut client_connection = Connection::open_in_memory().unwrap();
+        initialize_storage(&mut client_connection).unwrap();
+        let mut server_connection = Connection::open_in_memory().unwrap();
+        initialize_storage(&mut server_connection).unwrap();
+
+        let client_connection = Arc::new(Mutex::new(client_connection));
+        let server_connection = Arc::new(Mutex::new(server_connection));
+        let mut client_handshake = MlsHandshake::new(
+            client_connection,
+            client_signer,
+            root_signer.certificate.clone(),
+        );
+        let mut server_handshake = MlsHandshake::new(
+            server_connection,
+            server_signer,
+            root_signer.certificate.clone(),
+        );
+        let client_km = Arc::new(Mutex::new(TrafficSecrets::default()));
+        let server_km = Arc::new(Mutex::new(TrafficSecrets::default()));
+
+        let ckm = client_km.clone();
+        let client_task = tokio::spawn(async move {
+            let mut tf = ckm.lock().await;
+            *tf = client_handshake
+                .client_handshake(&mut client_framed_rx, &mut client_framed_tx)
+                .await
+                .unwrap();
+            let (secret_update, message) = client_handshake.update_handshake().await.unwrap();
+            if let Some(secret_update) = secret_update {
+                tf.update(secret_update);
+            }
+            client_framed_tx.send(&message).await.unwrap();
+            let response = client_framed_rx
+                .next()
+                .await
+                .unwrap()
+                .unwrap()
+                .data
+                .to_vec();
+            let (secret_update, message) = client_handshake
+                .process_signaling_message(&response)
+                .await
+                .unwrap();
+            if let Some(secret_update) = secret_update {
+                tf.update(secret_update);
+            }
+            assert!(message.is_none());
+        });
+
+        let skm = server_km.clone();
+        let server_task = tokio::spawn(async move {
+            let mut tf = skm.lock().await;
+            (*tf, _) = server_handshake
+                .server_handshake(&mut server_framed_rx, &mut server_framed_tx)
+                .await
+                .unwrap();
+            let message_bytes = server_framed_rx
+                .next()
+                .await
+                .unwrap()
+                .unwrap()
+                .data
+                .to_vec();
+            let (secret_update, message) = server_handshake
+                .process_signaling_message(&message_bytes)
+                .await
+                .unwrap();
+            if let Some(secret_update) = secret_update {
+                tf.update(secret_update);
+            }
+            server_framed_tx.send(&message.unwrap()).await.unwrap();
+        });
+
+        tokio::try_join!(client_task, server_task).unwrap();
+        assert_eq!(
+            client_km.lock().await.client_secret,
+            server_km.lock().await.client_secret
+        );
+        assert_eq!(
+            client_km.lock().await.server_secret,
+            server_km.lock().await.server_secret
+        );
+    }
+}
