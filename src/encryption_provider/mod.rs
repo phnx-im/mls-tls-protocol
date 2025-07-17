@@ -458,7 +458,7 @@ impl EncryptionProvider<EstablishedState, true> {
 
 impl<State, const IS_SERVER: bool> EncryptionProvider<State, IS_SERVER> {
     pub fn initialize_storage(connection: &mut Connection) -> Result<(), EncryptionProviderError> {
-        MlsHandshake::initialize_storage(connection).map_err(MlsHandshakeError::from)?;
+        MlsHandshake::initialize_storage(connection)?;
 
         Ok(())
     }
@@ -474,7 +474,7 @@ impl<const IS_SERVER: bool> Stream for EncryptionProvider<EstablishedState, IS_S
         let stream = self.get_mut();
         match ready!(Pin::new(&mut stream.state.channels.reader).poll_next(cx)) {
             Some(Ok(packet)) => match InnerPlaintext::tls_deserialize(&mut packet.data.as_ref()) {
-                Ok(plaintext) => Poll::Ready(Some(Ok(plaintext.into()))),
+                Ok(plaintext) => Poll::Ready(Some(Ok(plaintext))),
                 Err(e) => Poll::Ready(Some(Err(e.into()))),
             },
             Some(Err(e)) => Poll::Ready(Some(Err(e.into()))),

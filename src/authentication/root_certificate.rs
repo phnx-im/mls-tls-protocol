@@ -91,7 +91,7 @@ impl RootCertificate {
 
         if let Some(expected_identity) = expected_identity {
             let certificate_subject = leaf_certificate.tbs_certificate.subject.to_string();
-            let expected_subject = format!("CN={}", expected_identity);
+            let expected_subject = format!("CN={expected_identity}");
             if certificate_subject != expected_subject {
                 return Err(VerificationError::UnexpectedIdentity {
                     expected: expected_subject,
