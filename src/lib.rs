@@ -10,4 +10,5 @@ pub mod authentication;
 pub mod encryption_provider;
 pub mod handshake;
 pub mod mls_handshake;
+pub mod pre_handshake;
 pub mod tls_aead;

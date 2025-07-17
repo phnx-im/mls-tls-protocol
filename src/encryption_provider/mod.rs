@@ -3,14 +3,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use chrono::{DateTime, Utc};
-use futures::{SinkExt, StreamExt};
+use futures::{ready, Sink, SinkExt, Stream, StreamExt};
 use openmls::prelude::{
     tls_codec::{self, Deserialize, Serialize},
     TlsDeserialize, TlsSerialize, TlsSize,
 };
 use openmls_sqlite_storage::Connection;
-use openmls_traits::types::{AeadType, HashType};
-use std::sync::Arc;
+use openmls_traits::types::{AeadType, CryptoError, HashType};
+use std::{
+    pin::Pin,
+    sync::{Arc, Mutex as StdMutex},
+    task::Poll,
+};
 use thiserror::Error;
 use tokio::{
     net::{
@@ -29,7 +33,12 @@ use crate::{
     },
     handshake::{ClientIdentity, CompletedHandshake, Handshake},
     mls_handshake::{HandshakeError, MlsHandshake, MlsHandshakeError},
-    tls_aead::{codec::TlsFrameCodec, SecretUpdate, TlsAeadCodec, TlsAeadCodecError},
+    pre_handshake::{derive_traffic_secrets, PreHandshake},
+    tls_aead::{
+        codec::TlsFrameCodec,
+        stream_sink::{TlsAeadSink, TlsAeadSinkError, TlsAeadStream},
+        SecretUpdate, TlsAeadCodec, TrafficSecrets,
+    },
 };
 
 pub mod update_policy;
@@ -37,56 +46,178 @@ pub mod update_policy;
 #[cfg(test)]
 mod tests;
 
-const KEY_SCHEDULE_HASH_FUNCTION: HashType = HashType::Sha2_512;
-const AEAD_ALGORITHM: AeadType = AeadType::Aes256Gcm;
+pub(crate) const KEY_SCHEDULE_HASH_FUNCTION: HashType = HashType::Sha2_512;
+pub(crate) const AEAD_ALGORITHM: AeadType = AeadType::Aes256Gcm;
 
 #[derive(Error, Debug)]
 pub enum EncryptionProviderError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+    #[error("PreHandshake error: {0}")]
+    PreHandshakeError(Box<dyn std::error::Error + Send + Sync>),
     #[error("Handshake error: {0}")]
     HandshakeError(#[from] MlsHandshakeError),
-    #[error("Decoding error: {0}")]
+    #[error("Codec error: {0}")]
     CodecError(#[from] tls_codec::Error),
     #[error("Unexpected message: {0}")]
     UnexpectedMessage(String),
-    #[error("Crypto error: {0}")]
-    CryptoError(#[from] TlsAeadCodecError),
+    #[error(transparent)]
+    TlsTransportError(#[from] TlsAeadSinkError),
+    #[error("Error deriving traffic secrets from pre-handshake key: {0}")]
+    KeyDerivationError(#[from] CryptoError),
     #[error("Certificate error: {0}")]
     CertificateError(#[from] CertificateError),
-    #[error("Received an empty message")]
-    EmptyMessage,
-    #[error("Sqlite error: {0}")]
-    SqliteError(String),
 }
 
-pub struct InitialProviderState;
+pub struct UnprotectedHandshakeState {
+    reader: FramedRead<OwnedReadHalf, TlsFrameCodec>,
+    writer: FramedWrite<OwnedWriteHalf, TlsFrameCodec>,
+}
+
+pub struct ProtectedChannels {
+    reader: TlsAeadStream<FramedRead<OwnedReadHalf, TlsFrameCodec>>,
+    writer: TlsAeadSink<FramedWrite<OwnedWriteHalf, TlsFrameCodec>>,
+}
+
+impl ProtectedChannels {
+    fn new<const IS_SERVER: bool>(
+        reader: FramedRead<OwnedReadHalf, TlsFrameCodec>,
+        writer: FramedWrite<OwnedWriteHalf, TlsFrameCodec>,
+        traffic_secrets: TrafficSecrets,
+    ) -> Result<Self, TlsAeadSinkError> {
+        let cipher = TlsAeadCodec::new(
+            Arc::new(openmls_rust_crypto::RustCrypto::default()),
+            IS_SERVER,
+            traffic_secrets,
+            &[],
+            KEY_SCHEDULE_HASH_FUNCTION,
+            AEAD_ALGORITHM,
+        )?;
+
+        let cipher = Arc::new(StdMutex::new(cipher));
+        let channels = Self {
+            reader: TlsAeadStream::new(reader, cipher.clone()),
+            writer: TlsAeadSink::new(writer, cipher),
+        };
+        Ok(channels)
+    }
+
+    fn update_cipher<const IS_SERVER: bool>(
+        &mut self,
+        traffic_secrets: TrafficSecrets,
+    ) -> Result<(), TlsAeadSinkError> {
+        let secret_update = SecretUpdate::Both(traffic_secrets);
+        self.writer
+            .update_traffic_secrets(secret_update.clone(), IS_SERVER)?;
+        self.reader
+            .update_traffic_secrets(secret_update, IS_SERVER)?;
+        Ok(())
+    }
+}
+
+pub struct ProtectedHandshakeState {
+    channels: ProtectedChannels,
+}
+
+#[trait_variant::make(Send)]
+pub trait PreHandshakeState {
+    /// Perform the handshake with the peer and return the key material.
+    async fn client_handshake(
+        self,
+        handshake: &mut MlsHandshake,
+    ) -> Result<ProtectedChannels, EncryptionProviderError>;
+
+    async fn server_handshake(
+        self,
+        handshake: &mut MlsHandshake,
+    ) -> Result<(ProtectedChannels, ClientIdentity), EncryptionProviderError>;
+}
+
+impl PreHandshakeState for UnprotectedHandshakeState {
+    async fn client_handshake(
+        self,
+        handshake: &mut MlsHandshake,
+    ) -> Result<ProtectedChannels, EncryptionProviderError> {
+        let Self {
+            mut reader,
+            mut writer,
+        } = self;
+
+        let traffic_secrets = handshake.client_handshake(&mut reader, &mut writer).await?;
+
+        let channels = ProtectedChannels::new::<false>(reader, writer, traffic_secrets)?;
+
+        Ok(channels)
+    }
+
+    async fn server_handshake(
+        self,
+        handshake: &mut MlsHandshake,
+    ) -> Result<(ProtectedChannels, ClientIdentity), EncryptionProviderError> {
+        let Self {
+            mut reader,
+            mut writer,
+        } = self;
+
+        let (traffic_secrets, client_identity) =
+            handshake.server_handshake(&mut reader, &mut writer).await?;
+
+        let channels = ProtectedChannels::new::<true>(reader, writer, traffic_secrets)?;
+        Ok((channels, client_identity))
+    }
+}
+
+impl PreHandshakeState for ProtectedHandshakeState {
+    async fn client_handshake(
+        self,
+        handshake: &mut MlsHandshake,
+    ) -> Result<ProtectedChannels, EncryptionProviderError> {
+        let mut channels = self.channels;
+
+        let traffic_secrets = handshake
+            .client_handshake(&mut channels.reader, &mut channels.writer)
+            .await?;
+
+        channels.update_cipher::<false>(traffic_secrets)?;
+
+        Ok(channels)
+    }
+
+    async fn server_handshake(
+        self,
+        handshake: &mut MlsHandshake,
+    ) -> Result<(ProtectedChannels, ClientIdentity), EncryptionProviderError> {
+        let mut channels = self.channels;
+
+        let (traffic_secrets, client_identity) = handshake
+            .server_handshake(&mut channels.reader, &mut channels.writer)
+            .await?;
+
+        channels.update_cipher::<true>(traffic_secrets)?;
+
+        Ok((channels, client_identity))
+    }
+}
+
+pub trait ProtectedState {
+    fn channels_mut(&mut self) -> &mut ProtectedChannels;
+}
+
+impl ProtectedState for ProtectedHandshakeState {
+    fn channels_mut(&mut self) -> &mut ProtectedChannels {
+        &mut self.channels
+    }
+}
+
+impl ProtectedState for EstablishedState {
+    fn channels_mut(&mut self) -> &mut ProtectedChannels {
+        &mut self.channels
+    }
+}
 
 pub struct EstablishedState {
     handshake: MlsHandshake,
-    cipher: TlsAeadCodec,
-}
-
-pub trait ProtectedTrafficState {
-    fn handshake(&self) -> &MlsHandshake;
-
-    fn handshake_mut(&mut self) -> &mut MlsHandshake;
-
-    fn cipher(&mut self) -> &mut TlsAeadCodec;
-}
-
-impl ProtectedTrafficState for EstablishedState {
-    fn handshake(&self) -> &MlsHandshake {
-        &self.handshake
-    }
-
-    fn handshake_mut(&mut self) -> &mut MlsHandshake {
-        &mut self.handshake
-    }
-
-    fn cipher(&mut self) -> &mut TlsAeadCodec {
-        &mut self.cipher
-    }
+    channels: ProtectedChannels,
 }
 
 #[repr(u8)]
@@ -99,36 +230,71 @@ pub enum InnerPlaintext {
 }
 
 pub struct EncryptionProvider<State, const IS_SERVER: bool> {
-    reader: FramedRead<tokio::net::tcp::OwnedReadHalf, TlsFrameCodec>,
-    writer: FramedWrite<tokio::net::tcp::OwnedWriteHalf, TlsFrameCodec>,
     state: State,
     address: String,
     update_policy: UpdatePolicy,
 }
 
-impl<const IS_SERVER: bool> EncryptionProvider<InitialProviderState, IS_SERVER> {
+impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SERVER> {
     pub fn new_from_stream(
         socket: TcpStream,
         update_policy: UpdatePolicy,
     ) -> Result<Self, EncryptionProviderError> {
         let address = socket.peer_addr()?.to_string();
-        let (reader, writer) = TcpStream::into_split(socket);
-        let state = InitialProviderState;
-        let reader = FramedRead::new(reader, TlsFrameCodec);
-        let writer = FramedWrite::new(writer, TlsFrameCodec);
+        let (tcp_reader, tcp_writer) = TcpStream::into_split(socket);
+        let reader = FramedRead::new(tcp_reader, TlsFrameCodec);
+        let writer = FramedWrite::new(tcp_writer, TlsFrameCodec);
+        let state = UnprotectedHandshakeState { reader, writer };
         Ok(EncryptionProvider {
-            reader,
-            writer,
             state,
             address,
             update_policy,
         })
     }
+
+    pub async fn new_with_pre_handshake<Ph: PreHandshake>(
+        socket: TcpStream,
+        update_policy: UpdatePolicy,
+        mut pre_handshake: Ph,
+    ) -> Result<EncryptionProvider<ProtectedHandshakeState, IS_SERVER>, EncryptionProviderError>
+    {
+        let address = socket.peer_addr()?.to_string();
+        let (mut reader, mut writer) = TcpStream::into_split(socket);
+
+        let pre_hs_secret = if IS_SERVER {
+            pre_handshake
+                .server_handshake(&mut reader, &mut writer)
+                .await
+        } else {
+            pre_handshake
+                .client_handshake(&mut reader, &mut writer)
+                .await
+        }
+        .map_err(|e| EncryptionProviderError::PreHandshakeError(e.into()))?;
+
+        let traffic_secrets = derive_traffic_secrets(&pre_hs_secret)?;
+
+        let channels = ProtectedChannels::new::<IS_SERVER>(
+            FramedRead::new(reader, TlsFrameCodec),
+            FramedWrite::new(writer, TlsFrameCodec),
+            traffic_secrets,
+        )?;
+
+        let state = ProtectedHandshakeState { channels };
+
+        let provider = EncryptionProvider {
+            state,
+            address,
+            update_policy,
+        };
+
+        Ok(provider)
+    }
 }
 
-impl EncryptionProvider<InitialProviderState, true> {
+impl<State: PreHandshakeState> EncryptionProvider<State, true> {
     pub async fn handshake(
-        mut self,
+        self,
         connection: Arc<Mutex<Connection>>,
         serialized_root_certificate: Vec<u8>,
         serialized_leaf_signer: Vec<u8>,
@@ -139,31 +305,24 @@ impl EncryptionProvider<InitialProviderState, true> {
 
         let mut handshake = MlsHandshake::new(connection, leaf_signer, root_certificate);
 
-        let (traffic_secrets, client_identity) = handshake
-            .server_handshake(&mut self.reader, &mut self.writer)
-            .await?;
+        let (channels, client_identity) = self.state.server_handshake(&mut handshake).await?;
 
-        let aead_codec = TlsAeadCodec::new(
-            Arc::new(openmls_rust_crypto::RustCrypto::default()),
-            true,
-            traffic_secrets,
-            &[],
-            KEY_SCHEDULE_HASH_FUNCTION,
-            AEAD_ALGORITHM,
-        )?;
-
-        let next_state = self.into_next_state(|_| EstablishedState {
-            handshake,
-            cipher: aead_codec,
-        });
+        let next_state = EncryptionProvider {
+            state: EstablishedState {
+                handshake,
+                channels,
+            },
+            address: self.address,
+            update_policy: self.update_policy,
+        };
 
         Ok((next_state, client_identity))
     }
 }
 
-impl EncryptionProvider<InitialProviderState, false> {
+impl<State: PreHandshakeState> EncryptionProvider<State, false> {
     pub async fn handshake(
-        mut self,
+        self,
         connection: Arc<Mutex<Connection>>,
         serialized_root_certificate: Vec<u8>,
         serialized_leaf_signer: Vec<u8>,
@@ -173,31 +332,41 @@ impl EncryptionProvider<InitialProviderState, false> {
 
         let mut handshake = MlsHandshake::new(connection, leaf_signer, root_certificate);
 
-        let traffic_secrets = handshake
-            .client_handshake(&mut self.reader, &mut self.writer)
-            .await?;
+        let channels = self.state.client_handshake(&mut handshake).await?;
 
-        let aead_codec = TlsAeadCodec::new(
-            Arc::new(openmls_rust_crypto::RustCrypto::default()),
-            false,
-            traffic_secrets,
-            &[],
-            KEY_SCHEDULE_HASH_FUNCTION,
-            AEAD_ALGORITHM,
-        )?;
-
-        let next_state = self.into_next_state(|_| EstablishedState {
-            handshake,
-            cipher: aead_codec,
-        });
+        let next_state = EncryptionProvider {
+            state: EstablishedState {
+                handshake,
+                channels,
+            },
+            address: self.address,
+            update_policy: self.update_policy,
+        };
 
         Ok(next_state)
     }
 }
 
+impl<const IS_SERVER: bool, State: ProtectedState> EncryptionProvider<State, IS_SERVER> {
+    fn update_cipher(
+        &mut self,
+        secret_update: SecretUpdate,
+    ) -> Result<(), EncryptionProviderError> {
+        self.state
+            .channels_mut()
+            .writer
+            .update_traffic_secrets(secret_update.clone(), IS_SERVER)?;
+        self.state
+            .channels_mut()
+            .reader
+            .update_traffic_secrets(secret_update, IS_SERVER)?;
+        Ok(())
+    }
+}
+
 impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
     async fn read_bytes_inner(&mut self) -> Result<Option<Vec<u8>>, EncryptionProviderError> {
-        let mut message = self.read_message().await?;
+        let mut message = self.next().await.transpose()?;
         // If the message is a signaling message, we process it and keep
         // listening until we get the next set of bytes.
         loop {
@@ -212,29 +381,19 @@ impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
                         .process_signaling_message(&signaling_message)
                         .await?;
                     if let Some(signaling_message) = response {
-                        self.send_message(InnerPlaintext::Signaling(signaling_message))
+                        self.send(InnerPlaintext::Signaling(signaling_message))
                             .await?;
                     }
                     if let Some(secret_update) = secret_update {
                         self.update_cipher(secret_update)?;
                     }
-                    message = self.read_message().await?;
+                    message = self.next().await.transpose()?;
                 }
                 None => {
                     return Ok(None);
                 }
             }
         }
-    }
-
-    fn update_cipher(
-        &mut self,
-        secret_update: SecretUpdate,
-    ) -> Result<(), EncryptionProviderError> {
-        self.state
-            .cipher
-            .update_traffic_secrets(secret_update, IS_SERVER)
-            .map_err(EncryptionProviderError::CryptoError)
     }
 
     pub async fn send_bytes(
@@ -245,8 +404,7 @@ impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
         if self.update_policy.update_is_due(now) {
             match self.state.handshake.update_handshake().await {
                 Ok((secret_update, message)) => {
-                    self.send_message(InnerPlaintext::Signaling(message))
-                        .await?;
+                    self.send(InnerPlaintext::Signaling(message)).await?;
                     if let Some(secret_update) = secret_update {
                         self.update_cipher(secret_update)?;
                     }
@@ -263,7 +421,7 @@ impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
         }
         let bytes_len = bytes.len();
 
-        let send_result = self.send_message(InnerPlaintext::Application(bytes)).await;
+        let send_result = self.send(InnerPlaintext::Application(bytes)).await;
 
         self.update_policy
             .increment_bytes_transferred(bytes_len as u64);
@@ -272,7 +430,7 @@ impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
     }
 
     pub async fn shutdown(&mut self) -> Result<(), EncryptionProviderError> {
-        self.writer.close().await?;
+        self.state.channels.writer.close().await?;
         Ok(())
     }
 
@@ -285,7 +443,7 @@ impl EncryptionProvider<EstablishedState, false> {
     pub async fn read_bytes(&mut self) -> Result<Vec<u8>, EncryptionProviderError> {
         self.read_bytes_inner()
             .await?
-            // Servers should't terminate connections
+            // Servers shoulnd't terminate connections
             .ok_or(EncryptionProviderError::UnexpectedMessage(
                 "Expected IpPacket, server terminated connection".to_string(),
             ))
@@ -299,55 +457,79 @@ impl EncryptionProvider<EstablishedState, true> {
 }
 
 impl<State, const IS_SERVER: bool> EncryptionProvider<State, IS_SERVER> {
-    fn into_next_state<NextState, F: FnOnce(State) -> NextState>(
-        self,
-        transform_state: F,
-    ) -> EncryptionProvider<NextState, IS_SERVER> {
-        EncryptionProvider {
-            reader: self.reader,
-            writer: self.writer,
-            state: transform_state(self.state),
-            address: self.address,
-            update_policy: self.update_policy,
-        }
-    }
-
     pub fn initialize_storage(connection: &mut Connection) -> Result<(), EncryptionProviderError> {
-        <MlsHandshake as Handshake<OwnedWriteHalf, OwnedReadHalf>>::initialize_storage(
-            &mut *connection,
-        )?;
+        MlsHandshake::initialize_storage(connection).map_err(MlsHandshakeError::from)?;
+
         Ok(())
     }
 }
 
-impl<State: ProtectedTrafficState, const IS_SERVER: bool> EncryptionProvider<State, IS_SERVER> {
-    async fn send_message(&mut self, msg: InnerPlaintext) -> Result<(), EncryptionProviderError> {
-        let msg = msg.tls_serialize_detached()?;
-        let msg = self.state.cipher().encrypt(&msg)?;
+impl<const IS_SERVER: bool> Stream for EncryptionProvider<EstablishedState, IS_SERVER> {
+    type Item = Result<InnerPlaintext, EncryptionProviderError>;
 
-        for m in msg {
-            self.writer.send(&m).await?;
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let stream = self.get_mut();
+        match ready!(Pin::new(&mut stream.state.channels.reader).poll_next(cx)) {
+            Some(Ok(packet)) => match InnerPlaintext::tls_deserialize(&mut packet.data.as_ref()) {
+                Ok(plaintext) => Poll::Ready(Some(Ok(plaintext.into()))),
+                Err(e) => Poll::Ready(Some(Err(e.into()))),
+            },
+            Some(Err(e)) => Poll::Ready(Some(Err(e.into()))),
+            None => Poll::Ready(None),
         }
+    }
+}
+
+impl<const IS_SERVER: bool> Sink<InnerPlaintext>
+    for EncryptionProvider<EstablishedState, IS_SERVER>
+{
+    type Error = EncryptionProviderError;
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        Pin::new(&mut self.get_mut().state.channels.writer)
+            .poll_ready(cx)
+            .map_err(From::from)
+    }
+
+    fn start_send(self: std::pin::Pin<&mut Self>, item: InnerPlaintext) -> Result<(), Self::Error> {
+        let inner_plaintext_bytes = item.tls_serialize_detached()?;
+        let sink = self.get_mut();
+        Pin::new(&mut sink.state.channels.writer).start_send(inner_plaintext_bytes.into())?;
         Ok(())
     }
 
-    async fn read_message(&mut self) -> Result<Option<InnerPlaintext>, EncryptionProviderError> {
-        let Some(msg) = self.reader.next().await.transpose()? else {
-            return Ok(None);
-        };
-
-        let msg_bytes = self.state.cipher().decrypt(&msg.data, &msg.header)?;
-        let message = InnerPlaintext::tls_deserialize(&mut msg_bytes.as_slice())?;
-
-        Ok(Some(message))
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        Pin::new(&mut self.get_mut().state.channels.writer)
+            .poll_flush(cx)
+            .map_err(From::from)
     }
 
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        Pin::new(&mut self.get_mut().state.channels.writer)
+            .poll_close(cx)
+            .map_err(From::from)
+    }
+}
+
+impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
     pub async fn delete(&mut self) -> Result<(), EncryptionProviderError> {
-        self.state.handshake_mut().delete().await?;
+        self.state.handshake.delete().await?;
         Ok(())
     }
 
     pub fn epoch(&self) -> u64 {
-        self.state.handshake().epoch()
+        self.state.handshake.epoch()
     }
 }

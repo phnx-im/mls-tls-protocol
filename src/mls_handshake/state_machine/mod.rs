@@ -163,7 +163,7 @@ trait HandshakeState {
     }
 }
 
-pub(super) fn initialize_storage(connection: &mut Connection) -> Result<(), HandshakeError> {
+pub(crate) fn initialize_storage(connection: &mut Connection) -> Result<(), HandshakeError> {
     let mut provider = Provider::from(connection);
     provider.initialize_storage()?;
     Ok(())
