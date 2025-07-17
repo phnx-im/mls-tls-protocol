@@ -14,8 +14,9 @@ use openmls_traits::{
     types::{AeadType, CryptoError, HashType},
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 use thiserror::Error;
+use tokio_util::bytes::Bytes;
 
 pub mod codec;
 mod key_generation;
@@ -288,8 +289,11 @@ impl TlsAeadCodec {
     /// * `data` - The data to encrypt
     /// # Returns
     /// A vector of encrypted application data frames if successful or an error
-    pub fn encrypt(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, TlsAeadCodecError> {
-        let mut frames = Vec::new();
+    pub fn encrypt(
+        &mut self,
+        data: &[u8],
+        buf: &mut VecDeque<Bytes>,
+    ) -> Result<(), TlsAeadCodecError> {
         for chunk in data.chunks(self.max_frame_size as usize) {
             let to_encode = [chunk, &[TLS_APP_DATA]].concat();
 
@@ -309,10 +313,10 @@ impl TlsAeadCodec {
                 associated_data.as_slice(),
             )?;
 
-            frames.push(encrypted);
+            buf.push_back(encrypted.into());
             self.send_seq += 1;
         }
-        Ok(frames)
+        Ok(())
     }
 
     /// Decrypt application data

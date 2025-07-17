@@ -39,7 +39,6 @@ pub(crate) struct TlsAeadSink<S> {
     inner: S,
     cipher: Arc<Mutex<TlsAeadCodec>>,
     buffer: VecDeque<Bytes>,
-    pending_plaintext: Option<Bytes>,
 }
 
 impl<S> TlsAeadSink<S> {
@@ -48,7 +47,6 @@ impl<S> TlsAeadSink<S> {
             inner,
             cipher,
             buffer: VecDeque::new(),
-            pending_plaintext: None,
         }
     }
 
@@ -62,6 +60,23 @@ impl<S> TlsAeadSink<S> {
             .update_traffic_secrets(traffic_secrets, is_server)?;
         Ok(())
     }
+
+    fn try_empty_buffer(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), TlsAeadSinkError>>
+    where
+        S: Sink<Bytes, Error = std::io::Error> + Unpin,
+    {
+        ready!(Pin::new(&mut self.inner).poll_ready(cx))?;
+        while let Some(item) = self.buffer.pop_front() {
+            Pin::new(&mut self.inner).start_send(item)?;
+            if !self.buffer.is_empty() {
+                ready!(Pin::new(&mut self.inner).poll_ready(cx))?;
+            }
+        }
+        Poll::Ready(Ok(()))
+    }
 }
 
 impl<S> Sink<Bytes> for TlsAeadSink<S>
@@ -70,54 +85,36 @@ where
 {
     type Error = TlsAeadSinkError;
 
-    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let this = self.get_mut();
-
-        // Only allow `start_send()` if no pending plaintext is waiting to be processed
-        if this.pending_plaintext.is_some() {
-            return Poll::Pending;
-        }
-
-        // Ask inner sink if it's ready
-        Pin::new(&mut this.inner)
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        ready!(self.as_mut().try_empty_buffer(cx)?);
+        Pin::new(&mut self.inner)
             .poll_ready(cx)
             .map_err(TlsAeadSinkError::IoError)
     }
 
     fn start_send(self: Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
         let this = self.get_mut();
-        if this.pending_plaintext.is_some() {
-            // Should have called `poll_ready` first
-            return Err(TlsAeadSinkError::Backpressure);
-        }
-        this.pending_plaintext = Some(item);
+
+        debug_assert!(
+            this.buffer.is_empty(),
+            "Buffer should be empty before sending new data"
+        );
+
+        let mut cipher = this.cipher.lock()?;
+        cipher.encrypt(&item, &mut this.buffer)?;
+
         Ok(())
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let this = self.get_mut();
-
-        // If we have pending plaintext to encrypt, do it now
-        if let Some(plaintext) = this.pending_plaintext.take() {
-            let mut cipher = this.cipher.lock()?;
-            let ciphertexts = cipher.encrypt(&plaintext)?.into_iter().map(Bytes::from);
-            this.buffer.extend(ciphertexts);
-        }
-
-        // Drive out buffered ciphertexts
-        while let Some(fragment) = this.buffer.pop_front() {
-            ready!(Pin::new(&mut this.inner).poll_ready(cx))?;
-            Pin::new(&mut this.inner).start_send(fragment)?;
-        }
-
-        // Ensure the inner sink is fully flushed
-        Pin::new(&mut this.inner)
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        ready!(self.as_mut().try_empty_buffer(cx)?);
+        Pin::new(&mut self.inner)
             .poll_flush(cx)
             .map_err(TlsAeadSinkError::IoError)
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        ready!(self.as_mut().poll_flush(cx)?);
+        ready!(self.as_mut().try_empty_buffer(cx)?);
         Pin::new(&mut self.inner)
             .poll_close(cx)
             .map_err(TlsAeadSinkError::IoError)
