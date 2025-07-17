@@ -40,9 +40,8 @@ impl PreHandshake for X25519Handshake {
         let private_key = EphemeralSecret::random_from_rng(&mut rng);
 
         let public_key = PublicKey::from(&private_key);
-        let public_key_bytes = public_key.to_bytes();
 
-        tx.write_all(&public_key_bytes).await?;
+        tx.write_all(public_key.as_bytes()).await?;
 
         let mut server_pk_bytes = [0u8; X25519_PUBLIC_KEY_LENGTH];
         rx.read_exact(&mut server_pk_bytes).await?;
