@@ -47,7 +47,7 @@ const CLIENT_TRAFFIC_SECRET_LABEL: &str = "Initial Client Traffic Secret";
 const SERVER_TRAFFIC_SECRET_LABEL: &str = "Initial Server Traffic Secret";
 
 fn export_label(label: &str) -> String {
-    format!("{}{}", SHARED_EXPORT_LABEL, label)
+    format!("{SHARED_EXPORT_LABEL}{label}")
 }
 
 fn capabilities() -> Capabilities {
@@ -163,7 +163,7 @@ trait HandshakeState {
     }
 }
 
-pub(super) fn initialize_storage(connection: &mut Connection) -> Result<(), HandshakeError> {
+pub(crate) fn initialize_storage(connection: &mut Connection) -> Result<(), HandshakeError> {
     let mut provider = Provider::from(connection);
     provider.initialize_storage()?;
     Ok(())

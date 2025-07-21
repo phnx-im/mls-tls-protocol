@@ -14,11 +14,13 @@ use openmls_traits::{
     types::{AeadType, CryptoError, HashType},
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 use thiserror::Error;
+use tokio_util::bytes::Bytes;
 
 pub mod codec;
 mod key_generation;
+pub(crate) mod stream_sink;
 
 pub(crate) const TLS_APP_DATA: u8 = 0x17;
 const TLS_VERSION: u16 = 0x0303;
@@ -34,11 +36,11 @@ pub(crate) struct ClientSecret(pub(crate) Vec<u8>);
 
 #[derive(Debug, Default, PartialEq, Clone, Serialize, Deserialize)]
 pub(crate) struct TrafficSecrets {
-    pub(crate) client_secret: ClientSecret,
-    pub(crate) server_secret: ServerSecret,
+    pub client_secret: ClientSecret,
+    pub server_secret: ServerSecret,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) enum SecretUpdate {
     ClientSecret(ClientSecret),
     ServerSecret(ServerSecret),
@@ -63,7 +65,7 @@ impl TrafficSecrets {
 #[derive(Debug, Error)]
 pub enum TlsAeadCodecError {
     #[error("Invalid data")]
-    InvalidData,
+    NotEnoughData,
     #[error("Invalid MAC")]
     InvalidMac,
     #[error("Crypto error")]
@@ -287,8 +289,11 @@ impl TlsAeadCodec {
     /// * `data` - The data to encrypt
     /// # Returns
     /// A vector of encrypted application data frames if successful or an error
-    pub fn encrypt(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, TlsAeadCodecError> {
-        let mut frames = Vec::new();
+    pub fn encrypt(
+        &mut self,
+        data: &[u8],
+        buf: &mut VecDeque<Bytes>,
+    ) -> Result<(), TlsAeadCodecError> {
         for chunk in data.chunks(self.max_frame_size as usize) {
             let to_encode = [chunk, &[TLS_APP_DATA]].concat();
 
@@ -308,10 +313,10 @@ impl TlsAeadCodec {
                 associated_data.as_slice(),
             )?;
 
-            frames.push(encrypted);
+            buf.push_back(encrypted.into());
             self.send_seq += 1;
         }
-        Ok(frames)
+        Ok(())
     }
 
     /// Decrypt application data
@@ -321,9 +326,9 @@ impl TlsAeadCodec {
     /// The decoded application data if successful or an error
     pub fn decrypt_with_header(&mut self, data: &[u8]) -> Result<Vec<u8>, TlsAeadCodecError> {
         let (associated_data, ciphertext) = match data.len() {
-            0..MIN_RECORD_SIZE => return Err(TlsAeadCodecError::InvalidData), // Not enough data
-            MIN_RECORD_SIZE => return Ok(Vec::new()),                         // Empty frame
-            _ => (&data[0..TLS_HDR_SIZE], &data[TLS_HDR_SIZE..]),             // Normal frame
+            0..MIN_RECORD_SIZE => return Err(TlsAeadCodecError::NotEnoughData), // Not enough data
+            MIN_RECORD_SIZE => return Ok(Vec::new()),                           // Empty frame
+            _ => (&data[0..TLS_HDR_SIZE], &data[TLS_HDR_SIZE..]),               // Normal frame
         };
         self.decrypt(ciphertext, associated_data)
     }

@@ -2,31 +2,39 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use futures::{Sink, Stream};
 use rusqlite::Connection;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio_util::bytes::Bytes;
 
-use crate::tls_aead::{SecretUpdate, TrafficSecrets};
+use crate::tls_aead::{codec::TlsPacketIn, SecretUpdate, TrafficSecrets};
 
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ClientIdentity(pub Vec<u8>);
-pub(super) trait Handshake<T: AsyncWrite + AsyncWriteExt, R: AsyncRead + AsyncReadExt> {
-    type Error;
-    type Reader;
-    type Writer;
+
+pub(super) trait Handshake {
+    type Error: std::error::Error + Send + Sync + 'static;
 
     fn initialize_storage(connection: &mut Connection) -> Result<(), Self::Error>;
 
     /// Perform the handshake with the peer and return the key material.
-    async fn client_handshake(
+    async fn client_handshake<
+        E: std::error::Error + Send + Sync + 'static,
+        S: Sink<Bytes, Error = E> + Unpin,
+        R: Stream<Item = Result<TlsPacketIn, E>> + Unpin,
+    >(
         &mut self,
-        rx: &mut Self::Reader,
-        tx: &mut Self::Writer,
+        rx: &mut R,
+        tx: &mut S,
     ) -> Result<TrafficSecrets, Self::Error>;
 
-    async fn server_handshake(
+    async fn server_handshake<
+        E: std::error::Error + Send + Sync + 'static,
+        S: Sink<Bytes, Error = E> + Unpin,
+        R: Stream<Item = Result<TlsPacketIn, E>> + Unpin,
+    >(
         &mut self,
-        rx: &mut Self::Reader,
-        tx: &mut Self::Writer,
+        rx: &mut R,
+        tx: &mut S,
     ) -> Result<(TrafficSecrets, ClientIdentity), Self::Error>;
 }
 

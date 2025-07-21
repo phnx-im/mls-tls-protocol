@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use tokio_util::{
-    bytes::{BufMut, BytesMut},
+    bytes::{BufMut, Bytes, BytesMut},
     codec::{Decoder, Encoder},
 };
 
@@ -52,16 +52,16 @@ impl Decoder for TlsFrameCodec {
     }
 }
 
-impl Encoder<&[u8]> for TlsFrameCodec {
+impl Encoder<Bytes> for TlsFrameCodec {
     type Error = std::io::Error;
 
-    fn encode(&mut self, data: &[u8], dst: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(&mut self, data: Bytes, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let length = data.len() as u16;
         dst.reserve(TLS_HDR_SIZE + length as usize);
         dst.put_u8(TLS_APP_DATA);
         dst.put_u16(TLS_VERSION);
         dst.put_u16(length);
-        dst.put_slice(data);
+        dst.put_slice(&data);
         Ok(())
     }
 }
@@ -88,7 +88,7 @@ mod tests {
         assert_eq!(packet.data.iter().as_slice(), b"hello");
 
         let mut buf3 = BytesMut::new();
-        codec.encode(&packet.data, &mut buf3).unwrap();
+        codec.encode(packet.data.freeze(), &mut buf3).unwrap();
         assert_eq!(buf2, buf3);
     }
 }

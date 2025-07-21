@@ -61,7 +61,6 @@ fn handshake() {
     };
 
     // The client should respond with a connection update of its own
-    println!("Processing connection update");
     let (server_traffic_secrets, server_message_bytes) = server_state
         .receive_signaling_message(
             &mut server_connection,

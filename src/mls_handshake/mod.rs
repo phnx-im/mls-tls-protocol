@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use futures::{SinkExt, StreamExt};
+use futures::{Sink, SinkExt, Stream, StreamExt};
 use openmls_rust_crypto::RustCrypto;
 use openmls_sqlite_storage::{Codec, Connection, SqliteStorageProvider};
 use openmls_traits::OpenMlsProvider;
@@ -13,18 +13,15 @@ use state_machine::{
 };
 use std::{borrow::Borrow, sync::Arc};
 use thiserror::Error;
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    sync::Mutex,
-};
-use tokio_util::codec::{FramedRead, FramedWrite};
+use tokio::sync::Mutex;
+use tokio_util::bytes::Bytes;
 use tracing::instrument;
 use uuid::Uuid;
 
 use crate::{
     authentication::{leaf_certificate::LeafCertificateSigner, root_certificate::RootCertificate},
     handshake::{ClientIdentity, CompletedHandshake, Handshake},
-    tls_aead::{codec::TlsFrameCodec, SecretUpdate, TrafficSecrets},
+    tls_aead::{codec::TlsPacketIn, SecretUpdate, TrafficSecrets},
 };
 
 pub use state_machine::HandshakeError;
@@ -38,8 +35,8 @@ mod state_machine;
 pub enum MlsHandshakeError {
     #[error("Decoding error")]
     DecodingError,
-    #[error(transparent)]
-    IoError(#[from] std::io::Error),
+    #[error("Error using underlying transport: {0}")]
+    TransportError(Box<dyn std::error::Error + Send + Sync>),
     #[error(transparent)]
     HandshakeError(#[from] HandshakeError),
     #[error("Perform a handshake before sending or receiving messages")]
@@ -78,25 +75,29 @@ impl MlsHandshake {
     }
 }
 
-impl<T: AsyncWrite + Unpin, R: AsyncRead + Unpin> Handshake<T, R> for MlsHandshake {
+impl Handshake for MlsHandshake {
     type Error = MlsHandshakeError;
-    type Reader = FramedRead<R, TlsFrameCodec>;
-    type Writer = FramedWrite<T, TlsFrameCodec>;
 
     fn initialize_storage(connection: &mut Connection) -> Result<(), Self::Error> {
         initialize_storage(connection)?;
         Ok(())
     }
 
-    async fn server_handshake(
+    async fn server_handshake<
+        E: std::error::Error + Send + Sync + 'static,
+        S: Sink<Bytes, Error = E> + Unpin,
+        R: Stream<Item = Result<TlsPacketIn, E>> + Unpin,
+    >(
         &mut self,
-        rx: &mut Self::Reader,
-        tx: &mut Self::Writer,
-    ) -> Result<(TrafficSecrets, ClientIdentity), MlsHandshakeError> {
+        rx: &mut R,
+        tx: &mut S,
+    ) -> Result<(TrafficSecrets, ClientIdentity), Self::Error> {
+        // Read the first message from the client
         let Some(Ok(first_message_bytes)) = rx.next().await else {
-            tracing::error!("Invalid handshake ClientHello");
+            tracing::error!("Failed to read ClientHello");
             return Err(MlsHandshakeError::DecodingError);
         };
+
         let mut connection = self.connection.lock().await;
         let (state, traffic_secrets, client_identity, response_bytes) = ServerHandshake::start(
             &mut connection,
@@ -106,16 +107,22 @@ impl<T: AsyncWrite + Unpin, R: AsyncRead + Unpin> Handshake<T, R> for MlsHandsha
         )?;
         self.state = MlsHandshakeState::Server(state);
 
-        tx.send(&response_bytes).await?;
+        tx.send(Bytes::from(response_bytes))
+            .await
+            .map_err(|e| MlsHandshakeError::TransportError(e.into()))?;
 
         Ok((traffic_secrets, client_identity))
     }
 
     #[instrument(skip_all)]
-    async fn client_handshake(
+    async fn client_handshake<
+        E: std::error::Error + Send + Sync + 'static,
+        S: Sink<Bytes, Error = E> + Unpin,
+        R: Stream<Item = Result<TlsPacketIn, E>> + Unpin,
+    >(
         &mut self,
-        rx: &mut Self::Reader,
-        tx: &mut Self::Writer,
+        rx: &mut R,
+        tx: &mut S,
     ) -> Result<TrafficSecrets, MlsHandshakeError> {
         let connection = self.connection.lock().await;
 
@@ -131,7 +138,9 @@ impl<T: AsyncWrite + Unpin, R: AsyncRead + Unpin> Handshake<T, R> for MlsHandsha
             self.root_certificate.clone(),
             profile_id,
         )?;
-        tx.send(&client_hello).await?;
+        tx.send(Bytes::from(client_hello))
+            .await
+            .map_err(|e| MlsHandshakeError::TransportError(e.into()))?;
 
         // Wait for the server to return a welcome message
         let Some(Ok(server_hello_bytes)) = rx.next().await else {
@@ -218,24 +227,33 @@ impl CompletedHandshake for MlsHandshake {
 
 #[cfg(test)]
 mod tests {
-    use crate::authentication::root_certificate::{RootCertificateSigner, SERVER_ROOT_IDENTITY};
+    use crate::{
+        authentication::root_certificate::{RootCertificateSigner, SERVER_ROOT_IDENTITY},
+        tls_aead::codec::TlsFrameCodec,
+    };
 
     use super::*;
     use chrono::Utc;
+    use futures::TryStreamExt;
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
     use std::sync::Arc;
     use tokio::sync::Mutex;
+    use tokio_util::codec::{FramedRead, FramedWrite};
 
     #[tokio::test]
     async fn mls_handshake() {
         let (client_rx, server_tx) = tokio::io::duplex(1024);
         let (server_rx, client_tx) = tokio::io::duplex(1024);
 
-        let mut client_framed_tx = FramedWrite::new(client_tx, TlsFrameCodec);
-        let mut server_framed_rx = FramedRead::new(server_rx, TlsFrameCodec);
-        let mut client_framed_rx = FramedRead::new(client_rx, TlsFrameCodec);
-        let mut server_framed_tx = FramedWrite::new(server_tx, TlsFrameCodec);
+        let mut client_framed_tx = FramedWrite::new(client_tx, TlsFrameCodec)
+            .sink_map_err(|e| MlsHandshakeError::TransportError(e.into()));
+        let mut server_framed_rx =
+            FramedRead::new(server_rx, TlsFrameCodec).map_err(|_| MlsHandshakeError::DecodingError);
+        let mut client_framed_rx =
+            FramedRead::new(client_rx, TlsFrameCodec).map_err(|_| MlsHandshakeError::DecodingError);
+        let mut server_framed_tx = FramedWrite::new(server_tx, TlsFrameCodec)
+            .sink_map_err(|e| MlsHandshakeError::TransportError(e.into()));
 
         let seed_passphrase = [0u8; 32];
         let now = Utc::now();
@@ -283,16 +301,10 @@ mod tests {
             if let Some(secret_update) = secret_update {
                 tf.update(secret_update);
             }
-            client_framed_tx.send(&message).await.unwrap();
-            let response = client_framed_rx
-                .next()
-                .await
-                .unwrap()
-                .unwrap()
-                .data
-                .to_vec();
+            client_framed_tx.send(Bytes::from(message)).await.unwrap();
+            let response = client_framed_rx.next().await.unwrap().unwrap();
             let (secret_update, message) = client_handshake
-                .process_signaling_message(&response)
+                .process_signaling_message(&response.data)
                 .await
                 .unwrap();
             if let Some(secret_update) = secret_update {
@@ -308,21 +320,18 @@ mod tests {
                 .server_handshake(&mut server_framed_rx, &mut server_framed_tx)
                 .await
                 .unwrap();
-            let message_bytes = server_framed_rx
-                .next()
-                .await
-                .unwrap()
-                .unwrap()
-                .data
-                .to_vec();
+            let message_bytes = server_framed_rx.next().await.unwrap().unwrap();
             let (secret_update, message) = server_handshake
-                .process_signaling_message(&message_bytes)
+                .process_signaling_message(&message_bytes.data)
                 .await
                 .unwrap();
             if let Some(secret_update) = secret_update {
                 tf.update(secret_update);
             }
-            server_framed_tx.send(&message.unwrap()).await.unwrap();
+            server_framed_tx
+                .send(Bytes::from(message.unwrap()))
+                .await
+                .unwrap();
         });
 
         tokio::try_join!(client_task, server_task).unwrap();
