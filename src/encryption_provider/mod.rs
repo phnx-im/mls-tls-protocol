@@ -8,6 +8,7 @@ use openmls::prelude::{
     tls_codec::{self, Deserialize, Serialize},
     TlsDeserialize, TlsSerialize, TlsSize,
 };
+use openmls_basic_credential::SignatureKeyPair;
 use openmls_sqlite_storage::Connection;
 use openmls_traits::types::{AeadType, CryptoError, HashType};
 use std::{
@@ -27,10 +28,6 @@ use tokio_util::codec::{FramedRead, FramedWrite};
 use update_policy::UpdatePolicy;
 
 use crate::{
-    authentication::{
-        leaf_certificate::LeafCertificateSigner, root_certificate::RootCertificate,
-        CertificateError,
-    },
     handshake::{ClientIdentity, CompletedHandshake, Handshake},
     mls_handshake::{HandshakeError, MlsHandshake, MlsHandshakeError},
     pre_handshake::{derive_traffic_secrets, PreHandshake},
@@ -65,8 +62,6 @@ pub enum EncryptionProviderError {
     TlsTransportError(#[from] TlsAeadSinkError),
     #[error("Error deriving traffic secrets from pre-handshake key: {0}")]
     KeyDerivationError(#[from] CryptoError),
-    #[error("Certificate error: {0}")]
-    CertificateError(#[from] CertificateError),
 }
 
 pub struct UnprotectedHandshakeState {
@@ -125,6 +120,7 @@ pub trait PreHandshakeState {
     async fn client_handshake(
         self,
         handshake: &mut MlsHandshake,
+        server_verifying_key: &[u8],
     ) -> Result<ProtectedChannels, EncryptionProviderError>;
 
     async fn server_handshake(
@@ -137,13 +133,16 @@ impl PreHandshakeState for UnprotectedHandshakeState {
     async fn client_handshake(
         self,
         handshake: &mut MlsHandshake,
+        server_verifying_key: &[u8],
     ) -> Result<ProtectedChannels, EncryptionProviderError> {
         let Self {
             mut reader,
             mut writer,
         } = self;
 
-        let traffic_secrets = handshake.client_handshake(&mut reader, &mut writer).await?;
+        let traffic_secrets = handshake
+            .client_handshake(&mut reader, &mut writer, server_verifying_key)
+            .await?;
 
         let channels = ProtectedChannels::new::<false>(reader, writer, traffic_secrets)?;
 
@@ -171,11 +170,16 @@ impl PreHandshakeState for ProtectedHandshakeState {
     async fn client_handshake(
         self,
         handshake: &mut MlsHandshake,
+        server_verifying_key: &[u8],
     ) -> Result<ProtectedChannels, EncryptionProviderError> {
         let mut channels = self.channels;
 
         let traffic_secrets = handshake
-            .client_handshake(&mut channels.reader, &mut channels.writer)
+            .client_handshake(
+                &mut channels.reader,
+                &mut channels.writer,
+                server_verifying_key,
+            )
             .await?;
 
         channels.update_cipher::<false>(traffic_secrets)?;
@@ -296,14 +300,10 @@ impl<State: PreHandshakeState> EncryptionProvider<State, true> {
     pub async fn handshake(
         self,
         connection: Arc<Mutex<Connection>>,
-        serialized_root_certificate: Vec<u8>,
-        serialized_leaf_signer: Vec<u8>,
+        leaf_signer: SignatureKeyPair,
     ) -> Result<(EncryptionProvider<EstablishedState, true>, ClientIdentity), EncryptionProviderError>
     {
-        let leaf_signer = LeafCertificateSigner::deserialize(&serialized_leaf_signer)?;
-        let root_certificate = RootCertificate::deserialize(&serialized_root_certificate)?;
-
-        let mut handshake = MlsHandshake::new(connection, leaf_signer, root_certificate);
+        let mut handshake = MlsHandshake::new(connection, leaf_signer);
 
         let (channels, client_identity) = self.state.server_handshake(&mut handshake).await?;
 
@@ -324,15 +324,15 @@ impl<State: PreHandshakeState> EncryptionProvider<State, false> {
     pub async fn handshake(
         self,
         connection: Arc<Mutex<Connection>>,
-        serialized_root_certificate: Vec<u8>,
-        serialized_leaf_signer: Vec<u8>,
+        leaf_signer: SignatureKeyPair,
+        server_verifying_key: &[u8],
     ) -> Result<EncryptionProvider<EstablishedState, false>, EncryptionProviderError> {
-        let leaf_signer = LeafCertificateSigner::deserialize(&serialized_leaf_signer)?;
-        let root_certificate = RootCertificate::deserialize(&serialized_root_certificate)?;
+        let mut handshake = MlsHandshake::new(connection, leaf_signer);
 
-        let mut handshake = MlsHandshake::new(connection, leaf_signer, root_certificate);
-
-        let channels = self.state.client_handshake(&mut handshake).await?;
+        let channels = self
+            .state
+            .client_handshake(&mut handshake, server_verifying_key)
+            .await?;
 
         let next_state = EncryptionProvider {
             state: EstablishedState {

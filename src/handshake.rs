@@ -25,6 +25,7 @@ pub(super) trait Handshake {
         &mut self,
         rx: &mut R,
         tx: &mut S,
+        server_verifying_key: &[u8],
     ) -> Result<TrafficSecrets, Self::Error>;
 
     async fn server_handshake<

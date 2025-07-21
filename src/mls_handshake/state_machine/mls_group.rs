@@ -2,7 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use openmls::prelude::{KeyPackageIn, MlsMessageOut};
+use openmls::prelude::{BasicCredential, KeyPackageIn, MlsMessageOut};
+use openmls_basic_credential::SignatureKeyPair;
 use serde::{Deserialize, Serialize};
 
 use crate::handshake::ClientIdentity;
@@ -22,24 +23,26 @@ impl MlsSession {
 
     pub(super) fn create_server_session(
         connection: &Connection,
-        leaf_signer: &LeafCertificateSigner,
+        leaf_signer: &SignatureKeyPair,
         key_package_in: KeyPackageIn,
-        root_certificate: &RootCertificate,
     ) -> Result<(Self, TrafficSecrets, ClientIdentity, MlsMessageOut), HandshakeError> {
         let provider = Provider::from(connection);
         let key_package = key_package_in
             .validate(provider.crypto(), openmls::prelude::ProtocolVersion::Mls10)
             .map_err(|e| HandshakeError::ClientHelloError(e.into()))?;
 
-        // Verify the client certificate with the root certificate
-        let credential_with_key = CredentialWithKey {
-            credential: key_package.leaf_node().credential().clone(),
-            signature_key: key_package.leaf_node().signature_key().clone(),
-        };
-        root_certificate.verify_openmls_credential(&credential_with_key, None)?;
+        let client_basic_credential =
+            BasicCredential::try_from(key_package.leaf_node().credential().clone())
+                .map_err(|_| VerificationError::WrongCredentialType)?;
+        let client_identity = ClientIdentity(client_basic_credential.identity().to_vec());
 
-        let client_identity_bytes = credential_with_key.signature_key.as_slice().to_vec();
-        let client_identity = ClientIdentity(client_identity_bytes);
+        // Identity is irrelevant, as clients directly verify the server's
+        // verifying key.
+        let own_basic_credential = BasicCredential::new(b"server".to_vec());
+        let credential_with_key = CredentialWithKey {
+            credential: own_basic_credential.into(),
+            signature_key: leaf_signer.public().into(),
+        };
 
         // Create a new group with the server as the only member
         let group_id = GroupId::from_slice(Uuid::new_v4().as_bytes());
@@ -48,11 +51,7 @@ impl MlsSession {
             .with_capabilities(capabilities())
             .ciphersuite(CIPHERSUITE)
             .use_ratchet_tree_extension(true)
-            .build(
-                &provider,
-                leaf_signer,
-                leaf_signer.mls_credential_with_key()?,
-            )
+            .build(&provider, leaf_signer, credential_with_key)
             .map_err(|e| HandshakeError::ClientHelloError(e.into()))?;
         // Add client to the group
         let (_commit, welcome, _group_info) = server_group
@@ -75,7 +74,7 @@ impl MlsSession {
     pub(super) fn update(
         &self,
         connection: &Connection,
-        leaf_signer: &LeafCertificateSigner,
+        leaf_signer: &SignatureKeyPair,
     ) -> Result<MlsMessageOut, HandshakeError> {
         let provider = Provider::from(connection);
 
@@ -179,8 +178,9 @@ impl MlsSession {
             ));
         };
 
-        let client_identity_bytes = leaf_node.signature_key().as_slice().to_vec();
-        let client_identity = ClientIdentity(client_identity_bytes);
+        let basic_credential = BasicCredential::try_from(leaf_node.credential().clone())
+            .map_err(|_| VerificationError::WrongCredentialType)?;
+        let client_identity = ClientIdentity(basic_credential.identity().to_vec());
 
         // Credential can't have changed
         if &sender_credential != leaf_node.credential() {

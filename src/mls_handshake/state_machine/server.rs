@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use openmls_basic_credential::SignatureKeyPair;
+
 use crate::{
     handshake::ClientIdentity,
     mls_handshake::messages::{ClientHelloIn, ConnectionUpdateIn, ResumptionIn},
@@ -12,48 +14,9 @@ use super::*;
 pub(in crate::mls_handshake) struct ServerHandshake;
 
 impl ServerHandshake {
-    #[cfg(test)]
-    pub(in crate::mls_handshake) fn start_from_seed(
-        connection: &mut Connection,
-        seed: [u8; 32],
-        message_bytes: &[u8],
-    ) -> Result<
-        (
-            ServerHandshakeState,
-            TrafficSecrets,
-            Vec<u8>,
-            LeafCertificateSigner,
-        ),
-        HandshakeError,
-    > {
-        use chrono::Utc;
-        use rand_core::{OsRng, SeedableRng};
-
-        use crate::authentication::root_certificate::{
-            RootCertificateSigner, SERVER_ROOT_IDENTITY,
-        };
-
-        let root_signer = RootCertificateSigner::new_with_time_and_rng(
-            chrono::Utc::now(),
-            &mut rand_chacha::ChaCha20Rng::from_seed(seed),
-            SERVER_ROOT_IDENTITY,
-        )?;
-        let leaf_signer =
-            root_signer.issue_new_leaf_with_time_and_rng("server", Utc::now(), &mut OsRng)?;
-        let (state, traffic_secrets, _client_identity, message_bytes) = Self::start(
-            connection,
-            &leaf_signer,
-            &root_signer.into_certificate(),
-            message_bytes,
-        )?;
-
-        Ok((state, traffic_secrets, message_bytes, leaf_signer))
-    }
-
     pub(in crate::mls_handshake) fn start(
         connection: &mut Connection,
-        leaf_signer: &LeafCertificateSigner,
-        root_certificate: &RootCertificate,
+        leaf_signer: &SignatureKeyPair,
         message_bytes: &[u8],
     ) -> Result<
         (
@@ -68,7 +31,7 @@ impl ServerHandshake {
         message.check_version()?;
         match message.payload {
             HandshakePayloadIn::ClientHello(client_hello) => {
-                Self::process_client_hello(connection, leaf_signer, root_certificate, client_hello)
+                Self::process_client_hello(connection, leaf_signer, client_hello)
             }
             HandshakePayloadIn::Resumption(resumption) => {
                 Self::process_resumption(connection, resumption)
@@ -78,8 +41,7 @@ impl ServerHandshake {
 
     fn process_client_hello(
         connection: &mut Connection,
-        leaf_signer: &LeafCertificateSigner,
-        root_certificate: &RootCertificate,
+        leaf_signer: &SignatureKeyPair,
         client_hello: ClientHelloIn,
     ) -> Result<
         (
@@ -99,12 +61,7 @@ impl ServerHandshake {
         };
 
         let (mls_session, traffic_secrets, client_identity, welcome) =
-            MlsSession::create_server_session(
-                connection,
-                leaf_signer,
-                key_package_in,
-                root_certificate,
-            )?;
+            MlsSession::create_server_session(connection, leaf_signer, key_package_in)?;
 
         let message = ServerHelloOut { welcome };
 
@@ -179,7 +136,7 @@ impl ServerHandshakeState {
     pub(in crate::mls_handshake) fn update(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &LeafCertificateSigner,
+        leaf_signer: &SignatureKeyPair,
         update_requested: bool,
     ) -> Result<Vec<u8>, HandshakeError> {
         if self.is_waiting_for_response() {
@@ -202,7 +159,7 @@ impl ServerHandshakeState {
     pub(in crate::mls_handshake) fn receive_signaling_message(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &LeafCertificateSigner,
+        leaf_signer: &SignatureKeyPair,
         message_bytes: &[u8],
     ) -> Result<(TrafficSecrets, Option<Vec<u8>>), HandshakeError> {
         let signaling_message = SignalingMessageIn::tls_deserialize_exact(message_bytes)?;
@@ -243,7 +200,7 @@ impl ServerHandshakeState {
     fn process_update(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &LeafCertificateSigner,
+        leaf_signer: &SignatureKeyPair,
         connection_update: ConnectionUpdateIn,
     ) -> Result<(TrafficSecrets, Vec<u8>), HandshakeError> {
         let (traffic_secrets, mls_session, _client_identity) =

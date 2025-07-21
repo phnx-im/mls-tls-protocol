@@ -3,14 +3,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use chrono::Utc;
-use rand_chacha::ChaCha20Rng;
-use rand_core::SeedableRng;
 use std::{net::SocketAddr, time::Duration};
 use tokio::net::TcpListener;
 use tracing::{span, Instrument, Level};
 
 use crate::{
-    authentication::root_certificate::{RootCertificateSigner, SERVER_ROOT_IDENTITY},
+    authentication::LEAF_SIGNATURE_SCHEME,
     encryption_provider::update_policy::{TimeBasedUpdatePolicy, TrafficBasedUpdatePolicy},
     pre_handshake::{psk::Psk, x25519::X25519Handshake},
 };
@@ -29,8 +27,7 @@ struct InitialPayload(Vec<u8>);
 
 async fn handle_new_connection(
     server_tcp_socket: TcpStream,
-    serialized_root_certificate: Vec<u8>,
-    serialized_server_signer: Vec<u8>,
+    server_signer: SignatureKeyPair,
     initial_payload: InitialPayload,
     update_policy: UpdatePolicy,
     connection: Arc<Mutex<Connection>>,
@@ -45,11 +42,7 @@ async fn handle_new_connection(
                 update_policy,
             )
             .unwrap()
-            .handshake(
-                connection,
-                serialized_root_certificate,
-                serialized_server_signer,
-            )
+            .handshake(connection, server_signer)
             .await
         }
         HandshakeEncryption::Psk(psk) => {
@@ -60,11 +53,7 @@ async fn handle_new_connection(
             )
             .await
             .unwrap()
-            .handshake(
-                connection,
-                serialized_root_certificate,
-                serialized_server_signer,
-            )
+            .handshake(connection, server_signer)
             .await
         }
         HandshakeEncryption::X25519(handshake) => {
@@ -75,11 +64,7 @@ async fn handle_new_connection(
             )
             .await
             .unwrap()
-            .handshake(
-                connection,
-                serialized_root_certificate,
-                serialized_server_signer,
-            )
+            .handshake(connection, server_signer)
             .await
         }
     }
@@ -108,8 +93,7 @@ async fn handle_new_connection(
 
 async fn server_task(
     server_listener: TcpListener,
-    serialized_root_certificate: Vec<u8>,
-    serialized_server_signer: Vec<u8>,
+    server_signer: SignatureKeyPair,
     initial_payload: InitialPayload,
     update_policy: UpdatePolicy,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
@@ -124,8 +108,7 @@ async fn server_task(
         let (server_tcp_socket, _) = server_listener.accept().await.unwrap();
         final_connection = handle_new_connection(
             server_tcp_socket,
-            serialized_root_certificate.clone(),
-            serialized_server_signer.clone(),
+            server_signer.clone(),
             initial_payload.clone(),
             update_policy.clone(),
             connection.clone(),
@@ -162,8 +145,8 @@ async fn send_test_message(
 
 async fn client_task(
     server_addr: SocketAddr,
-    serialized_root_certificate: Vec<u8>,
-    serialized_client_signer: Vec<u8>,
+    client_signer: SignatureKeyPair,
+    server_verifying_key: Vec<u8>,
     initial_payload: InitialPayload,
     mut update_policy: UpdatePolicy,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
@@ -185,8 +168,8 @@ async fn client_task(
         client_tcp_socket,
         update_policy.clone(),
         connection.clone(),
-        serialized_root_certificate.clone(),
-        serialized_client_signer.clone(),
+        client_signer.clone(),
+        server_verifying_key.clone(),
     )
     .await;
     tracing::info!("Completed handshake");
@@ -220,8 +203,8 @@ async fn client_task(
         client_tcp_socket,
         update_policy.clone(),
         connection,
-        serialized_root_certificate,
-        serialized_client_signer,
+        client_signer,
+        server_verifying_key,
     )
     .await;
 
@@ -259,23 +242,10 @@ async fn client_task(
 async fn encryption_provider() {
     tracing_subscriber::fmt::init();
 
-    let seed_passphrase = [0u8; 32];
     let now = Utc::now();
-    let rng = &mut ChaCha20Rng::from_seed(seed_passphrase);
 
-    let root_signer = RootCertificateSigner::new_with_time_and_rng(now, rng, SERVER_ROOT_IDENTITY)
-        .expect("failed to create root signer");
-
-    let server_signer = root_signer
-        .issue_new_leaf_with_time_and_rng("server", now, rng)
-        .expect("failed to create server signer");
-    let client_signer = root_signer
-        .issue_new_leaf_with_time_and_rng("client", now, rng)
-        .expect("failed to create client signer");
-
-    let serialized_root_certificate = root_signer.certificate.serialize().unwrap();
-    let serialized_server_signer = server_signer.serialize().unwrap();
-    let serialized_client_signer = client_signer.serialize().unwrap();
+    let server_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
+    let client_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
 
     let initial_payload = InitialPayload(b"Initial payload".to_vec());
 
@@ -303,9 +273,8 @@ async fn encryption_provider() {
             let server_listener = TcpListener::bind("127.0.0.1:0").await.unwrap(); // Bind to any available port
             start_tasks(
                 server_listener,
-                serialized_root_certificate.clone(),
-                serialized_server_signer.clone(),
-                serialized_client_signer.clone(),
+                server_signer.clone(),
+                client_signer.clone(),
                 initial_payload.clone(),
                 server_policy.clone(),
                 client_policy.clone(),
@@ -319,9 +288,8 @@ async fn encryption_provider() {
 
 async fn start_tasks(
     server_listener: TcpListener,
-    serialized_root_certificate: Vec<u8>,
-    serialized_server_signer: Vec<u8>,
-    serialized_client_signer: Vec<u8>,
+    server_signer: SignatureKeyPair,
+    client_signer: SignatureKeyPair,
     initial_payload: InitialPayload,
     server_policy: UpdatePolicy,
     client_policy: UpdatePolicy,
@@ -329,11 +297,11 @@ async fn start_tasks(
     handshake_encryption: HandshakeEncryption,
 ) {
     let addr = server_listener.local_addr().unwrap();
+    let server_verifying_key = server_signer.public().to_vec();
     let server_task = tokio::spawn(
         server_task(
             server_listener,
-            serialized_root_certificate.clone(),
-            serialized_server_signer,
+            server_signer,
             initial_payload.clone(),
             server_policy.clone(),
             global_test_time.clone(),
@@ -345,8 +313,8 @@ async fn start_tasks(
     let client_task = tokio::spawn(
         client_task(
             addr,
-            serialized_root_certificate,
-            serialized_client_signer,
+            client_signer,
+            server_verifying_key,
             initial_payload,
             client_policy,
             global_test_time,
@@ -363,8 +331,8 @@ async fn spawn_client_encryption_provider(
     client_tcp_socket: TcpStream,
     update_policy: UpdatePolicy,
     connection: Arc<Mutex<Connection>>,
-    serialized_root_certificate: Vec<u8>,
-    serialized_client_signer: Vec<u8>,
+    client_signer: SignatureKeyPair,
+    server_verifying_key: Vec<u8>,
 ) -> EncryptionProvider<EstablishedState, false> {
     match handshake_encryption {
         HandshakeEncryption::Off => {
@@ -375,8 +343,8 @@ async fn spawn_client_encryption_provider(
             .unwrap()
             .handshake(
                 connection.clone(),
-                serialized_root_certificate.clone(),
-                serialized_client_signer.clone(),
+                client_signer.clone(),
+                &server_verifying_key,
             )
             .await
         }
@@ -390,8 +358,8 @@ async fn spawn_client_encryption_provider(
             .unwrap()
             .handshake(
                 connection.clone(),
-                serialized_root_certificate.clone(),
-                serialized_client_signer.clone(),
+                client_signer.clone(),
+                &server_verifying_key,
             )
             .await
         }
@@ -405,8 +373,8 @@ async fn spawn_client_encryption_provider(
             .unwrap()
             .handshake(
                 connection.clone(),
-                serialized_root_certificate.clone(),
-                serialized_client_signer.clone(),
+                client_signer.clone(),
+                &server_verifying_key,
             )
             .await
         }
