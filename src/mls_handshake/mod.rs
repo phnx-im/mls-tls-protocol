@@ -116,6 +116,7 @@ impl Handshake for MlsHandshake {
         &mut self,
         rx: &mut R,
         tx: &mut S,
+        client_id: Uuid,
         server_verifying_key: &[u8],
     ) -> Result<TrafficSecrets, MlsHandshakeError> {
         let connection = self.connection.lock().await;
@@ -125,12 +126,11 @@ impl Handshake for MlsHandshake {
         // TODO: Check here if we can load a `ClientHandshakeState` from the database
         // and resume the handshake.
 
-        let profile_id = Uuid::new_v4();
         let (handshake_state, client_hello) = ClientHandshake::start(
             &connection,
             &self.leaf_signer,
             server_verifying_key.into(),
-            profile_id,
+            client_id,
         )?;
         tx.send(Bytes::from(client_hello))
             .await
@@ -260,12 +260,14 @@ mod tests {
 
         let server_verifying_key = server_handshake.leaf_signer.public().to_vec();
         let ckm = client_km.clone();
+        let client_id = Uuid::new_v4();
         let client_task = tokio::spawn(async move {
             let mut tf = ckm.lock().await;
             *tf = client_handshake
                 .client_handshake(
                     &mut client_framed_rx,
                     &mut client_framed_tx,
+                    client_id,
                     &server_verifying_key,
                 )
                 .await
@@ -289,10 +291,12 @@ mod tests {
         let skm = server_km.clone();
         let server_task = tokio::spawn(async move {
             let mut tf = skm.lock().await;
-            (*tf, _) = server_handshake
+            let client_identity;
+            (*tf, client_identity) = server_handshake
                 .server_handshake(&mut server_framed_rx, &mut server_framed_tx)
                 .await
                 .unwrap();
+            assert_eq!(client_identity.0, client_id.as_bytes());
             let message_bytes = server_framed_rx.next().await.unwrap().unwrap();
             let (secret_update, message) = server_handshake
                 .process_signaling_message(&message_bytes.data)

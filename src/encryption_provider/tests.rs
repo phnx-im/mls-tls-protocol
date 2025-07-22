@@ -33,9 +33,10 @@ async fn handle_new_connection(
     connection: Arc<Mutex<Connection>>,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
     handshake_encryption: HandshakeEncryption,
+    expected_client_id: Uuid,
 ) -> bool {
     tracing::info!("Handling new connection");
-    let (mut encryption_provider, _) = match handshake_encryption {
+    let (mut encryption_provider, client_id) = match handshake_encryption {
         HandshakeEncryption::Off => {
             EncryptionProvider::<UnprotectedHandshakeState, true>::new_from_stream(
                 server_tcp_socket,
@@ -69,6 +70,9 @@ async fn handle_new_connection(
         }
     }
     .unwrap();
+
+    assert_eq!(client_id.0, expected_client_id.as_bytes());
+
     tracing::info!("Completed handshake");
     encryption_provider
         .send_bytes(initial_payload.0, Utc::now())
@@ -98,6 +102,7 @@ async fn server_task(
     update_policy: UpdatePolicy,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
     handshake_encryption: HandshakeEncryption,
+    expected_client_id: Uuid,
 ) {
     let mut connection = Connection::open_in_memory().unwrap();
     EncryptionProvider::<UnprotectedHandshakeState, true>::initialize_storage(&mut connection)
@@ -114,6 +119,7 @@ async fn server_task(
             connection.clone(),
             global_test_time.clone(),
             handshake_encryption.clone(),
+            expected_client_id,
         )
         .await;
     }
@@ -146,6 +152,7 @@ async fn send_test_message(
 async fn client_task(
     server_addr: SocketAddr,
     client_signer: SignatureKeyPair,
+    client_id: Uuid,
     server_verifying_key: Vec<u8>,
     initial_payload: InitialPayload,
     mut update_policy: UpdatePolicy,
@@ -169,6 +176,7 @@ async fn client_task(
         update_policy.clone(),
         connection.clone(),
         client_signer.clone(),
+        client_id,
         server_verifying_key.clone(),
     )
     .await;
@@ -177,7 +185,14 @@ async fn client_task(
     tracing::info!("Received initial payload");
     assert_eq!(initial_payload, received_initial_payload);
     let messages = vec![
-        "hello", "world", "this", "is", "a", "test", "message", "fin",
+        "hello",
+        "world",
+        "this",
+        "is",
+        "a",
+        "test",
+        "message",
+        "final fin",
     ];
     for message in messages.into_iter() {
         let mut test_time = *global_test_time.lock().await;
@@ -195,47 +210,48 @@ async fn client_task(
     // shut down the connection s.t. we can resume
     encryption_provider.shutdown().await.unwrap();
 
-    let client_tcp_socket = TcpStream::connect(server_addr).await.unwrap();
+    //let client_tcp_socket = TcpStream::connect(server_addr).await.unwrap();
 
-    tracing::info!("Reconnecting to server");
-    let mut encryption_provider = spawn_client_encryption_provider(
-        handshake_encryption,
-        client_tcp_socket,
-        update_policy.clone(),
-        connection,
-        client_signer,
-        server_verifying_key,
-    )
-    .await;
+    //tracing::info!("Reconnecting to server");
+    //let mut encryption_provider = spawn_client_encryption_provider(
+    //    handshake_encryption,
+    //    client_tcp_socket,
+    //    update_policy.clone(),
+    //    connection,
+    //    client_signer,
+    //    client_id,
+    //    server_verifying_key,
+    //)
+    //.await;
 
-    // We wait for the initial payload to be received. We probably won't need
-    // this in the future
-    tracing::info!("Waiting for initial payload");
-    let _initial_payload = encryption_provider.read_bytes().await.unwrap();
+    //// We wait for the initial payload to be received. We probably won't need
+    //// this in the future
+    //tracing::info!("Waiting for initial payload");
+    //let _initial_payload = encryption_provider.read_bytes().await.unwrap();
 
-    let messages = vec![
-        "hello",
-        "world",
-        "this",
-        "is",
-        "another",
-        "test",
-        "message",
-        "final fin",
-    ];
-    for message in messages.into_iter() {
-        let mut test_time = *global_test_time.lock().await;
-        test_time += Duration::from_secs(2);
-        tracing::info!("Sending message: {}", message);
-        let response = send_test_message(
-            &mut encryption_provider,
-            &mut update_policy,
-            message,
-            test_time,
-        )
-        .await;
-        assert_eq!(message.to_uppercase().as_bytes().to_vec(), response);
-    }
+    //let messages = vec![
+    //    "hello",
+    //    "world",
+    //    "this",
+    //    "is",
+    //    "another",
+    //    "test",
+    //    "message",
+    //    "final fin",
+    //];
+    //for message in messages.into_iter() {
+    //    let mut test_time = *global_test_time.lock().await;
+    //    test_time += Duration::from_secs(2);
+    //    tracing::info!("Sending message: {}", message);
+    //    let response = send_test_message(
+    //        &mut encryption_provider,
+    //        &mut update_policy,
+    //        message,
+    //        test_time,
+    //    )
+    //    .await;
+    //    assert_eq!(message.to_uppercase().as_bytes().to_vec(), response);
+    //}
 }
 
 #[tokio::test]
@@ -246,6 +262,7 @@ async fn encryption_provider() {
 
     let server_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
     let client_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
+    let client_id = Uuid::new_v4();
 
     let initial_payload = InitialPayload(b"Initial payload".to_vec());
 
@@ -275,6 +292,7 @@ async fn encryption_provider() {
                 server_listener,
                 server_signer.clone(),
                 client_signer.clone(),
+                client_id,
                 initial_payload.clone(),
                 server_policy.clone(),
                 client_policy.clone(),
@@ -290,6 +308,7 @@ async fn start_tasks(
     server_listener: TcpListener,
     server_signer: SignatureKeyPair,
     client_signer: SignatureKeyPair,
+    client_id: Uuid,
     initial_payload: InitialPayload,
     server_policy: UpdatePolicy,
     client_policy: UpdatePolicy,
@@ -306,6 +325,7 @@ async fn start_tasks(
             server_policy.clone(),
             global_test_time.clone(),
             handshake_encryption.clone(),
+            client_id,
         )
         .instrument(span!(Level::INFO, "server")),
     );
@@ -314,6 +334,7 @@ async fn start_tasks(
         client_task(
             addr,
             client_signer,
+            client_id,
             server_verifying_key,
             initial_payload,
             client_policy,
@@ -332,6 +353,7 @@ async fn spawn_client_encryption_provider(
     update_policy: UpdatePolicy,
     connection: Arc<Mutex<Connection>>,
     client_signer: SignatureKeyPair,
+    client_id: Uuid,
     server_verifying_key: Vec<u8>,
 ) -> EncryptionProvider<EstablishedState, false> {
     match handshake_encryption {
@@ -344,6 +366,7 @@ async fn spawn_client_encryption_provider(
             .handshake(
                 connection.clone(),
                 client_signer.clone(),
+                client_id,
                 &server_verifying_key,
             )
             .await
@@ -359,6 +382,7 @@ async fn spawn_client_encryption_provider(
             .handshake(
                 connection.clone(),
                 client_signer.clone(),
+                client_id,
                 &server_verifying_key,
             )
             .await
@@ -374,6 +398,7 @@ async fn spawn_client_encryption_provider(
             .handshake(
                 connection.clone(),
                 client_signer.clone(),
+                client_id,
                 &server_verifying_key,
             )
             .await

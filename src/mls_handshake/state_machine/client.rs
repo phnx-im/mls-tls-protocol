@@ -24,14 +24,14 @@ impl ClientHandshake {
     pub(in crate::mls_handshake) fn start_from_seed(
         connection: &mut Connection,
         server_verifying_key: SignaturePublicKey,
-        profile_id: Uuid,
+        client_id: Uuid,
     ) -> Result<(WaitingForServerHello, Vec<u8>, SignatureKeyPair), HandshakeError> {
         use crate::authentication::LEAF_SIGNATURE_SCHEME;
 
         let leaf_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
 
         let (waiting_for_server_hello, client_hello_bytes) =
-            Self::start(connection, &leaf_signer, server_verifying_key, profile_id)?;
+            Self::start(connection, &leaf_signer, server_verifying_key, client_id)?;
 
         Ok((waiting_for_server_hello, client_hello_bytes, leaf_signer))
     }
@@ -40,10 +40,10 @@ impl ClientHandshake {
         connection: &Connection,
         own_signature_keypair: &SignatureKeyPair,
         server_verifying_key: SignaturePublicKey,
-        profile_id: Uuid,
+        client_id: Uuid,
     ) -> Result<(WaitingForServerHello, Vec<u8>), HandshakeError> {
         let provider = Provider::from(connection);
-        let basic_credential = BasicCredential::new(profile_id.as_bytes().to_vec());
+        let basic_credential = BasicCredential::new(client_id.as_bytes().to_vec());
         let credential = Credential::from(basic_credential);
         let credential_with_key = CredentialWithKey {
             credential: credential.clone(),
@@ -66,7 +66,7 @@ impl ClientHandshake {
         Ok((
             WaitingForServerHello {
                 server_verifying_key,
-                profile_id,
+                profile_id: client_id,
             },
             message_bytes,
         ))

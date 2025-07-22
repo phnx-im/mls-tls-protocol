@@ -5,6 +5,7 @@
 use futures::{Sink, Stream};
 use rusqlite::Connection;
 use tokio_util::bytes::Bytes;
+use uuid::Uuid;
 
 use crate::tls_aead::{codec::TlsPacketIn, SecretUpdate, TrafficSecrets};
 
@@ -25,6 +26,7 @@ pub(super) trait Handshake {
         &mut self,
         rx: &mut R,
         tx: &mut S,
+        client_id: Uuid,
         server_verifying_key: &[u8],
     ) -> Result<TrafficSecrets, Self::Error>;
 

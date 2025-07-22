@@ -26,6 +26,7 @@ use tokio::{
 };
 use tokio_util::codec::{FramedRead, FramedWrite};
 use update_policy::UpdatePolicy;
+use uuid::Uuid;
 
 use crate::{
     handshake::{ClientIdentity, CompletedHandshake, Handshake},
@@ -120,6 +121,7 @@ pub trait PreHandshakeState {
     async fn client_handshake(
         self,
         handshake: &mut MlsHandshake,
+        client_id: Uuid,
         server_verifying_key: &[u8],
     ) -> Result<ProtectedChannels, EncryptionProviderError>;
 
@@ -133,6 +135,7 @@ impl PreHandshakeState for UnprotectedHandshakeState {
     async fn client_handshake(
         self,
         handshake: &mut MlsHandshake,
+        client_id: Uuid,
         server_verifying_key: &[u8],
     ) -> Result<ProtectedChannels, EncryptionProviderError> {
         let Self {
@@ -141,7 +144,7 @@ impl PreHandshakeState for UnprotectedHandshakeState {
         } = self;
 
         let traffic_secrets = handshake
-            .client_handshake(&mut reader, &mut writer, server_verifying_key)
+            .client_handshake(&mut reader, &mut writer, client_id, server_verifying_key)
             .await?;
 
         let channels = ProtectedChannels::new::<false>(reader, writer, traffic_secrets)?;
@@ -170,6 +173,7 @@ impl PreHandshakeState for ProtectedHandshakeState {
     async fn client_handshake(
         self,
         handshake: &mut MlsHandshake,
+        client_id: Uuid,
         server_verifying_key: &[u8],
     ) -> Result<ProtectedChannels, EncryptionProviderError> {
         let mut channels = self.channels;
@@ -178,6 +182,7 @@ impl PreHandshakeState for ProtectedHandshakeState {
             .client_handshake(
                 &mut channels.reader,
                 &mut channels.writer,
+                client_id,
                 server_verifying_key,
             )
             .await?;
@@ -325,13 +330,14 @@ impl<State: PreHandshakeState> EncryptionProvider<State, false> {
         self,
         connection: Arc<Mutex<Connection>>,
         leaf_signer: SignatureKeyPair,
+        client_id: Uuid,
         server_verifying_key: &[u8],
     ) -> Result<EncryptionProvider<EstablishedState, false>, EncryptionProviderError> {
         let mut handshake = MlsHandshake::new(connection, leaf_signer);
 
         let channels = self
             .state
-            .client_handshake(&mut handshake, server_verifying_key)
+            .client_handshake(&mut handshake, client_id, server_verifying_key)
             .await?;
 
         let next_state = EncryptionProvider {
