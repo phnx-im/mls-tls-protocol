@@ -30,7 +30,7 @@ use uuid::Uuid;
 
 use crate::{
     handshake::{ClientIdentity, CompletedHandshake, Handshake},
-    mls_handshake::{HandshakeError, MlsHandshake, MlsHandshakeError},
+    mls_handshake::{ClientHandshakeState, HandshakeError, MlsHandshake, MlsHandshakeError},
     pre_handshake::{derive_traffic_secrets, PreHandshake},
     tls_aead::{
         codec::TlsFrameCodec,
@@ -242,6 +242,7 @@ pub struct EncryptionProvider<State, const IS_SERVER: bool> {
     state: State,
     address: String,
     update_policy: UpdatePolicy,
+    per_handshake_session_id: Option<Uuid>,
 }
 
 impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SERVER> {
@@ -258,6 +259,7 @@ impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SER
             state,
             address,
             update_policy,
+            per_handshake_session_id: None,
         })
     }
 
@@ -270,7 +272,7 @@ impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SER
         let address = socket.peer_addr()?.to_string();
         let (mut reader, mut writer) = TcpStream::into_split(socket);
 
-        let pre_hs_secret = if IS_SERVER {
+        let (pre_hs_secret, session_id) = if IS_SERVER {
             pre_handshake
                 .server_handshake(&mut reader, &mut writer)
                 .await
@@ -295,9 +297,16 @@ impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SER
             state,
             address,
             update_policy,
+            per_handshake_session_id: Some(session_id),
         };
 
         Ok(provider)
+    }
+}
+
+impl<const IS_SERVER: bool> EncryptionProvider<ProtectedHandshakeState, IS_SERVER> {
+    pub fn pre_handshake_session_id(&self) -> Option<Uuid> {
+        self.per_handshake_session_id
     }
 }
 
@@ -319,6 +328,7 @@ impl<State: PreHandshakeState> EncryptionProvider<State, true> {
             },
             address: self.address,
             update_policy: self.update_policy,
+            per_handshake_session_id: None,
         };
 
         Ok((next_state, client_identity))
@@ -333,6 +343,12 @@ impl<State: PreHandshakeState> EncryptionProvider<State, false> {
         client_id: Uuid,
         server_verifying_key: &[u8],
     ) -> Result<EncryptionProvider<EstablishedState, false>, EncryptionProviderError> {
+        {
+            // TODO: This is a hack to delete the handshake state from the database
+            let mut connection = connection.lock().await;
+            ClientHandshakeState::delete(&mut connection, client_id)
+                .map_err(MlsHandshakeError::HandshakeError)?;
+        }
         let mut handshake = MlsHandshake::new(connection, leaf_signer);
 
         let channels = self
@@ -347,6 +363,7 @@ impl<State: PreHandshakeState> EncryptionProvider<State, false> {
             },
             address: self.address,
             update_policy: self.update_policy,
+            per_handshake_session_id: None,
         };
 
         Ok(next_state)
@@ -398,6 +415,38 @@ impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
                 None => {
                     return Ok(None);
                 }
+            }
+        }
+    }
+
+    /// Cancel-safe
+    pub async fn read_message(
+        &mut self,
+    ) -> Result<Option<InnerPlaintext>, EncryptionProviderError> {
+        self.next().await.transpose()
+    }
+
+    /// Not cancel-safe
+    pub async fn process_read_message(
+        &mut self,
+        message: InnerPlaintext,
+    ) -> Result<Option<Vec<u8>>, EncryptionProviderError> {
+        match message {
+            InnerPlaintext::Application(b) => Ok(Some(b)),
+            InnerPlaintext::Signaling(signaling_message) => {
+                let (secret_update, response) = self
+                    .state
+                    .handshake
+                    .process_signaling_message(&signaling_message)
+                    .await?;
+                if let Some(signaling_message) = response {
+                    self.send(InnerPlaintext::Signaling(signaling_message))
+                        .await?;
+                }
+                if let Some(secret_update) = secret_update {
+                    self.update_cipher(secret_update)?;
+                }
+                Ok(None)
             }
         }
     }

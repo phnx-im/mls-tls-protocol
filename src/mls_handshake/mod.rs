@@ -8,7 +8,7 @@ use openmls_rust_crypto::RustCrypto;
 use openmls_sqlite_storage::{Codec, Connection, SqliteStorageProvider};
 use openmls_traits::OpenMlsProvider;
 use state_machine::{
-    client::{ClientHandshake, ClientHandshakeState},
+    client::ClientHandshake,
     initialize_storage,
     server::{ServerHandshake, ServerHandshakeState},
 };
@@ -24,6 +24,8 @@ use crate::{
     tls_aead::{codec::TlsPacketIn, SecretUpdate, TrafficSecrets},
 };
 
+pub use openmls_provider::Provider;
+pub(crate) use state_machine::ClientHandshakeState;
 pub use state_machine::HandshakeError;
 
 mod messages;
@@ -209,7 +211,7 @@ impl CompletedHandshake for MlsHandshake {
         match &self.state {
             MlsHandshakeState::None => (),
             MlsHandshakeState::Client(client_handshake_state) => {
-                client_handshake_state.delete(&mut connection)?;
+                ClientHandshakeState::delete(&mut connection, client_handshake_state.profile_id)?;
             }
             MlsHandshakeState::Server(server_handshake_state) => {
                 server_handshake_state.mls_session.delete(&connection)?;

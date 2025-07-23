@@ -153,7 +153,7 @@ enum ClientInternalState {
 /// WARNING: When changing this struct, make sure to add a new
 /// `ClientHandshakeStateVersion` in the `persistence` module.
 #[derive(Serialize, Deserialize)]
-pub(in crate::mls_handshake) struct ClientHandshakeState {
+pub(crate) struct ClientHandshakeState {
     pub(crate) profile_id: Uuid,
     mls_session: MlsSession,
     internal_state: ClientInternalState,

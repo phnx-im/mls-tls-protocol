@@ -19,7 +19,7 @@ impl Codec for JsonCodec {
     }
 }
 
-pub(super) struct Provider<ConnectionRef: Borrow<Connection>> {
+pub struct Provider<ConnectionRef: Borrow<Connection>> {
     crypto: RustCrypto,
     storage: SqliteStorageProvider<JsonCodec, ConnectionRef>,
 }

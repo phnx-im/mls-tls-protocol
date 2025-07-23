@@ -6,6 +6,7 @@ use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::{crypto::OpenMlsCrypto, types::CryptoError, OpenMlsProvider};
 use rusqlite::Connection;
 use tokio::io::{AsyncRead, AsyncWrite};
+use uuid::Uuid;
 
 use crate::{
     encryption_provider::KEY_SCHEDULE_HASH_FUNCTION,
@@ -21,18 +22,25 @@ pub trait PreHandshake {
 
     fn initialize_storage(connection: &mut Connection) -> Result<(), Self::Error>;
 
-    /// Perform the handshake with the peer and return the key material.
+    /// Perform the handshake with the peer and return the key material and session ID.
+    ///
+    /// The session ID is used to identify the client/server or both. It can be unique or stable
+    /// between handshakes.
     async fn client_handshake<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin>(
         &mut self,
         rx: &mut R,
         tx: &mut W,
-    ) -> Result<Vec<u8>, Self::Error>;
+    ) -> Result<(Vec<u8>, Uuid), Self::Error>;
 
+    /// Perform the handshake with the peer and return the key material and session ID.
+    ///
+    /// The session ID is used to identify the client/server or both. It can be unique or stable
+    /// between handshakes.
     async fn server_handshake<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin>(
         &mut self,
         rx: &mut R,
         tx: &mut W,
-    ) -> Result<Vec<u8>, Self::Error>;
+    ) -> Result<(Vec<u8>, Uuid), Self::Error>;
 }
 
 pub(crate) fn derive_traffic_secrets(base_secret: &[u8]) -> Result<TrafficSecrets, CryptoError> {

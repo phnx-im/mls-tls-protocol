@@ -36,6 +36,7 @@ pub(super) mod server;
 #[cfg(test)]
 pub(super) mod tests;
 
+pub(crate) use client::ClientHandshakeState;
 pub(super) use mls_group::MlsSession;
 
 const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_256_XWING_AES256GCM_SHA512_P384;

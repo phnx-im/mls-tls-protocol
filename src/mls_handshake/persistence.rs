@@ -77,7 +77,7 @@ impl ClientHandshakeState {
         profile_id: Uuid,
     ) -> Result<Option<Self>, HandshakeError> {
         let mut stmt = connection.prepare(
-            "SELECT (handshake_state, version) FROM handshake_states WHERE profile_id = ?",
+            "SELECT handshake_state, version FROM handshake_states WHERE profile_id = ?",
         )?;
         let result = stmt
             .query_row([profile_id], |row| {
@@ -102,13 +102,16 @@ impl ClientHandshakeState {
     }
 
     /// Delete the handshake state and the underlying MLS group state from the database.
-    pub(super) fn delete(&self, connection: &mut Connection) -> Result<(), HandshakeError> {
-        if let Some(state) = Self::load(connection, self.profile_id)? {
+    pub(crate) fn delete(
+        connection: &mut Connection,
+        profile_id: Uuid,
+    ) -> Result<(), HandshakeError> {
+        if let Some(state) = Self::load(connection, profile_id)? {
             state.mls_session().delete(connection)?;
 
             connection.execute(
                 "DELETE FROM handshake_states WHERE profile_id = ?",
-                params![self.profile_id],
+                params![profile_id],
             )?;
         }
         Ok(())
