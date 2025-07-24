@@ -252,6 +252,12 @@ pub struct EncryptionProvider<State, const IS_SERVER: bool> {
     update_policy: UpdatePolicy,
 }
 
+impl<State, const IS_SERVER: bool> EncryptionProvider<State, IS_SERVER> {
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+}
+
 impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SERVER> {
     pub fn new_from_stream(
         socket: TcpStream,
