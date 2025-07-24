@@ -16,31 +16,31 @@ use crate::{
 pub mod psk;
 pub mod x25519;
 
+/// Result of the pre-handshake between a client and a server.
+pub struct HandshakePayload {
+    /// Shared secret established during the handshake between the client and the server
+    pub shared_secret: Vec<u8>,
+    /// Optional session ID negotiated between the client and the server
+    pub session_id: Option<Uuid>,
+}
+
 #[trait_variant::make(Send)]
 pub trait PreHandshake {
     type Error: std::error::Error + Send + Sync + 'static;
 
     fn initialize_storage(connection: &mut Connection) -> Result<(), Self::Error>;
 
-    /// Perform the handshake with the peer and return the key material and session ID.
-    ///
-    /// The session ID is used to identify the client/server or both. It can be unique or stable
-    /// between handshakes.
     async fn client_handshake<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin>(
         &mut self,
         rx: &mut R,
         tx: &mut W,
-    ) -> Result<(Vec<u8>, Uuid), Self::Error>;
+    ) -> Result<HandshakePayload, Self::Error>;
 
-    /// Perform the handshake with the peer and return the key material and session ID.
-    ///
-    /// The session ID is used to identify the client/server or both. It can be unique or stable
-    /// between handshakes.
     async fn server_handshake<W: AsyncWrite + Send + Unpin, R: AsyncRead + Send + Unpin>(
         &mut self,
         rx: &mut R,
         tx: &mut W,
-    ) -> Result<(Vec<u8>, Uuid), Self::Error>;
+    ) -> Result<HandshakePayload, Self::Error>;
 }
 
 pub(crate) fn derive_traffic_secrets(base_secret: &[u8]) -> Result<TrafficSecrets, CryptoError> {

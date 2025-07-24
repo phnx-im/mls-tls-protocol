@@ -113,6 +113,14 @@ impl ProtectedChannels {
 
 pub struct ProtectedHandshakeState {
     channels: ProtectedChannels,
+    session_id: Option<Uuid>,
+}
+
+impl ProtectedHandshakeState {
+    /// Session ID negotiated during the handshake, if any was negotiated.
+    pub fn session_id(&self) -> Option<Uuid> {
+        self.session_id
+    }
 }
 
 #[trait_variant::make(Send)]
@@ -242,7 +250,6 @@ pub struct EncryptionProvider<State, const IS_SERVER: bool> {
     state: State,
     address: String,
     update_policy: UpdatePolicy,
-    per_handshake_session_id: Option<Uuid>,
 }
 
 impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SERVER> {
@@ -259,7 +266,6 @@ impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SER
             state,
             address,
             update_policy,
-            per_handshake_session_id: None,
         })
     }
 
@@ -272,7 +278,7 @@ impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SER
         let address = socket.peer_addr()?.to_string();
         let (mut reader, mut writer) = TcpStream::into_split(socket);
 
-        let (pre_hs_secret, session_id) = if IS_SERVER {
+        let payload = if IS_SERVER {
             pre_handshake
                 .server_handshake(&mut reader, &mut writer)
                 .await
@@ -283,7 +289,7 @@ impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SER
         }
         .map_err(|e| EncryptionProviderError::PreHandshakeError(e.into()))?;
 
-        let traffic_secrets = derive_traffic_secrets(&pre_hs_secret)?;
+        let traffic_secrets = derive_traffic_secrets(&payload.shared_secret)?;
 
         let channels = ProtectedChannels::new::<IS_SERVER>(
             FramedRead::new(reader, TlsFrameCodec),
@@ -291,22 +297,18 @@ impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SER
             traffic_secrets,
         )?;
 
-        let state = ProtectedHandshakeState { channels };
+        let state = ProtectedHandshakeState {
+            channels,
+            session_id: payload.session_id,
+        };
 
         let provider = EncryptionProvider {
             state,
             address,
             update_policy,
-            per_handshake_session_id: Some(session_id),
         };
 
         Ok(provider)
-    }
-}
-
-impl<const IS_SERVER: bool> EncryptionProvider<ProtectedHandshakeState, IS_SERVER> {
-    pub fn pre_handshake_session_id(&self) -> Option<Uuid> {
-        self.per_handshake_session_id
     }
 }
 
@@ -328,7 +330,6 @@ impl<State: PreHandshakeState> EncryptionProvider<State, true> {
             },
             address: self.address,
             update_policy: self.update_policy,
-            per_handshake_session_id: None,
         };
 
         Ok((next_state, client_identity))
@@ -357,7 +358,6 @@ impl<State: PreHandshakeState> EncryptionProvider<State, false> {
             },
             address: self.address,
             update_policy: self.update_policy,
-            per_handshake_session_id: None,
         };
 
         Ok(next_state)
