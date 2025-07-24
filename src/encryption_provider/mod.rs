@@ -30,7 +30,7 @@ use uuid::Uuid;
 
 use crate::{
     handshake::{ClientIdentity, CompletedHandshake, Handshake},
-    mls_handshake::{ClientHandshakeState, HandshakeError, MlsHandshake, MlsHandshakeError},
+    mls_handshake::{HandshakeError, MlsHandshake, MlsHandshakeError},
     pre_handshake::{derive_traffic_secrets, PreHandshake},
     tls_aead::{
         codec::TlsFrameCodec,
@@ -343,12 +343,6 @@ impl<State: PreHandshakeState> EncryptionProvider<State, false> {
         client_id: Uuid,
         server_verifying_key: &[u8],
     ) -> Result<EncryptionProvider<EstablishedState, false>, EncryptionProviderError> {
-        {
-            // TODO: This is a hack to delete the handshake state from the database
-            let mut connection = connection.lock().await;
-            ClientHandshakeState::delete(&mut connection, client_id)
-                .map_err(MlsHandshakeError::HandshakeError)?;
-        }
         let mut handshake = MlsHandshake::new(connection, leaf_signer);
 
         let channels = self

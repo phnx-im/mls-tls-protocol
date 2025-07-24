@@ -102,7 +102,7 @@ impl ClientHandshakeState {
     }
 
     /// Delete the handshake state and the underlying MLS group state from the database.
-    pub(crate) fn delete(
+    pub(super) fn delete(
         connection: &mut Connection,
         profile_id: Uuid,
     ) -> Result<(), HandshakeError> {

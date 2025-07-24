@@ -8,7 +8,7 @@ use openmls_rust_crypto::RustCrypto;
 use openmls_sqlite_storage::{Codec, Connection, SqliteStorageProvider};
 use openmls_traits::OpenMlsProvider;
 use state_machine::{
-    client::ClientHandshake,
+    client::{ClientHandshake, ClientHandshakeState},
     initialize_storage,
     server::{ServerHandshake, ServerHandshakeState},
 };
@@ -25,7 +25,6 @@ use crate::{
 };
 
 pub use openmls_provider::Provider;
-pub(crate) use state_machine::ClientHandshakeState;
 pub use state_machine::HandshakeError;
 
 mod messages;
@@ -121,9 +120,10 @@ impl Handshake for MlsHandshake {
         client_id: Uuid,
         server_verifying_key: &[u8],
     ) -> Result<TrafficSecrets, MlsHandshakeError> {
-        let connection = self.connection.lock().await;
+        let mut connection = self.connection.lock().await;
 
         ClientHandshakeState::create_table(&connection)?;
+        ClientHandshakeState::delete(&mut connection, client_id)?;
 
         // TODO: Check here if we can load a `ClientHandshakeState` from the database
         // and resume the handshake.
