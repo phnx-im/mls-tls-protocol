@@ -4,8 +4,9 @@
 
 use openmls::prelude::{
     tls_codec::{Deserialize as _, Serialize as _},
-    MlsMessageOut,
+    BasicCredential, Credential, MlsMessageOut, SignaturePublicKey,
 };
+use openmls_basic_credential::SignatureKeyPair;
 use serde::{Deserialize, Serialize};
 use std::mem;
 
@@ -22,49 +23,39 @@ impl ClientHandshake {
     #[cfg(test)]
     pub(in crate::mls_handshake) fn start_from_seed(
         connection: &mut Connection,
-        seed: [u8; 32],
-        profile_id: Uuid,
-    ) -> Result<(WaitingForServerHello, Vec<u8>, LeafCertificateSigner), HandshakeError> {
-        use chrono::Utc;
-        use rand_core::{OsRng, SeedableRng};
-        use uuid::Uuid;
+        server_verifying_key: SignaturePublicKey,
+        client_id: Uuid,
+    ) -> Result<(WaitingForServerHello, Vec<u8>, SignatureKeyPair), HandshakeError> {
+        use crate::authentication::LEAF_SIGNATURE_SCHEME;
 
-        use crate::authentication::root_certificate::{
-            RootCertificateSigner, SERVER_ROOT_IDENTITY,
-        };
+        let leaf_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
 
-        let root_signer = RootCertificateSigner::new_with_time_and_rng(
-            chrono::Utc::now(),
-            &mut rand_chacha::ChaCha20Rng::from_seed(seed),
-            SERVER_ROOT_IDENTITY,
-        )?;
-        let leaf_signer =
-            root_signer.issue_new_leaf_with_time_and_rng(Uuid::new_v4(), Utc::now(), &mut OsRng)?;
-
-        let (waiting_for_server_hello, client_hello_bytes) = Self::start(
-            connection,
-            &leaf_signer,
-            root_signer.into_certificate(),
-            profile_id,
-        )?;
+        let (waiting_for_server_hello, client_hello_bytes) =
+            Self::start(connection, &leaf_signer, server_verifying_key, client_id)?;
 
         Ok((waiting_for_server_hello, client_hello_bytes, leaf_signer))
     }
 
     pub(in crate::mls_handshake) fn start(
         connection: &Connection,
-        leaf_signer: &LeafCertificateSigner,
-        root_certificate: RootCertificate,
-        profile_id: Uuid,
+        own_signature_keypair: &SignatureKeyPair,
+        server_verifying_key: SignaturePublicKey,
+        client_id: Uuid,
     ) -> Result<(WaitingForServerHello, Vec<u8>), HandshakeError> {
         let provider = Provider::from(connection);
+        let basic_credential = BasicCredential::new(client_id.as_bytes().to_vec());
+        let credential = Credential::from(basic_credential);
+        let credential_with_key = CredentialWithKey {
+            credential: credential.clone(),
+            signature_key: own_signature_keypair.public().into(),
+        };
         let key_package_bundle = KeyPackage::builder()
             .leaf_node_capabilities(capabilities())
             .build(
                 CIPHERSUITE,
                 &provider,
-                leaf_signer,
-                leaf_signer.mls_credential_with_key()?,
+                own_signature_keypair,
+                credential_with_key,
             )?;
         let client_hello = ClientHelloOut {
             key_package: key_package_bundle.key_package().clone().into(),
@@ -74,8 +65,8 @@ impl ClientHandshake {
         let message_bytes = handshake_message.tls_serialize_detached()?;
         Ok((
             WaitingForServerHello {
-                root_certificate,
-                profile_id,
+                server_verifying_key,
+                profile_id: client_id,
             },
             message_bytes,
         ))
@@ -84,7 +75,7 @@ impl ClientHandshake {
 
 pub(in crate::mls_handshake) struct WaitingForServerHello {
     profile_id: Uuid,
-    root_certificate: RootCertificate,
+    server_verifying_key: SignaturePublicKey,
 }
 
 impl WaitingForServerHello {
@@ -111,20 +102,14 @@ impl WaitingForServerHello {
             StagedWelcome::new_from_welcome(&provider, &join_config, welcome, None)
                 .map_err(|_| HandshakeError::ServerHelloError)?;
 
-        let server_leaf_credential = CredentialWithKey {
-            credential: staged_welcome
-                .welcome_sender()
-                .map_err(|_| VerificationError::LibraryError)?
-                .credential()
-                .clone(),
-            signature_key: staged_welcome
-                .welcome_sender()
-                .map_err(|_| VerificationError::LibraryError)?
-                .signature_key()
-                .clone(),
-        };
-        self.root_certificate
-            .verify_openmls_credential(&server_leaf_credential, Some("server"))?;
+        if staged_welcome
+            .welcome_sender()
+            .map_err(|_| VerificationError::LibraryError)?
+            .signature_key()
+            != &self.server_verifying_key
+        {
+            return Err(VerificationError::UnexpectedVerifyingKey.into());
+        }
         let client_group = staged_welcome
             .into_group(&provider)
             .map_err(|_| HandshakeError::ServerHelloError)?;
@@ -183,7 +168,7 @@ impl ClientHandshakeState {
     pub(in crate::mls_handshake) fn resume(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &LeafCertificateSigner,
+        leaf_signer: &SignatureKeyPair,
     ) -> Result<(TrafficSecrets, Vec<u8>), HandshakeError> {
         // If we want to resume and we haven't gotten a confirmation from the
         // server regarding our most recent update, we just resume use that
@@ -237,7 +222,7 @@ impl ClientHandshakeState {
     pub(in crate::mls_handshake) fn update(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &LeafCertificateSigner,
+        leaf_signer: &SignatureKeyPair,
         update_requested: bool,
     ) -> Result<(ClientSecret, Vec<u8>), HandshakeError> {
         if self.is_waiting_for_response() {
@@ -268,7 +253,7 @@ impl ClientHandshakeState {
     pub(in crate::mls_handshake) fn receive_signaling_message(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &LeafCertificateSigner,
+        leaf_signer: &SignatureKeyPair,
         message_bytes: &[u8],
     ) -> Result<(Option<SecretUpdate>, Option<Vec<u8>>), HandshakeError> {
         let signaling_message = SignalingMessageIn::tls_deserialize_exact(message_bytes)?;
@@ -344,7 +329,7 @@ impl ClientHandshakeState {
     fn process_update(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &LeafCertificateSigner,
+        leaf_signer: &SignatureKeyPair,
         connection_update: ConnectionUpdateIn,
     ) -> Result<(ClientSecret, Vec<u8>), HandshakeError> {
         let (mut traffic_secrets, mls_session, _) =

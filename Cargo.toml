@@ -14,12 +14,7 @@ openmls = { version = "0.6.0", features = [
 openmls_rust_crypto = { version = "0.3.0", git = "https://github.com/openmls/openmls", rev = "302a096d7b1ae9a87d400398c98049ebc204fb52" }
 openmls_sqlite_storage = { version = "0.1", git = "https://github.com/openmls/openmls", rev = "302a096d7b1ae9a87d400398c98049ebc204fb52" }
 openmls_traits = { version = "0.3.0", git = "https://github.com/openmls/openmls", rev = "302a096d7b1ae9a87d400398c98049ebc204fb52" }
-x509-cert = { version = "0.2.5", features = ["builder"] }
-p384 = { version = "0.13", features = ["pkcs8"] }
-sha2 = { version = "0.10", features = ["oid"] }
-pkcs8 = "0.10.2"
-ecdsa = { version = "0.16.9", features = ["pkcs8", "verifying"] }
-hex = "0.4"
+openmls_basic_credential = { version = "0.3.0", git = "https://github.com/openmls/openmls", rev = "302a096d7b1ae9a87d400398c98049ebc204fb52" }
 uuid = { version = "1.12.1", features = ["v4", "serde"] }
 rand_core = "0.6.4"
 chrono = "0.4.39"

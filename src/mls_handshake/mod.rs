@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
+use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::RustCrypto;
 use openmls_sqlite_storage::{Codec, Connection, SqliteStorageProvider};
 use openmls_traits::OpenMlsProvider;
@@ -19,7 +20,6 @@ use tracing::instrument;
 use uuid::Uuid;
 
 use crate::{
-    authentication::{leaf_certificate::LeafCertificateSigner, root_certificate::RootCertificate},
     handshake::{ClientIdentity, CompletedHandshake, Handshake},
     tls_aead::{codec::TlsPacketIn, SecretUpdate, TrafficSecrets},
 };
@@ -54,21 +54,15 @@ enum MlsHandshakeState {
 }
 
 pub struct MlsHandshake {
-    leaf_signer: LeafCertificateSigner,
-    root_certificate: RootCertificate,
+    leaf_signer: SignatureKeyPair,
     connection: Arc<Mutex<Connection>>,
     state: MlsHandshakeState,
 }
 
 impl MlsHandshake {
-    pub fn new(
-        connection: Arc<Mutex<Connection>>,
-        leaf_signer: LeafCertificateSigner,
-        root_certificate: RootCertificate,
-    ) -> Self {
+    pub fn new(connection: Arc<Mutex<Connection>>, leaf_signer: SignatureKeyPair) -> Self {
         Self {
             leaf_signer,
-            root_certificate,
             connection,
             state: MlsHandshakeState::None,
         }
@@ -102,7 +96,6 @@ impl Handshake for MlsHandshake {
         let (state, traffic_secrets, client_identity, response_bytes) = ServerHandshake::start(
             &mut connection,
             &self.leaf_signer,
-            &self.root_certificate,
             &first_message_bytes.data,
         )?;
         self.state = MlsHandshakeState::Server(state);
@@ -123,6 +116,8 @@ impl Handshake for MlsHandshake {
         &mut self,
         rx: &mut R,
         tx: &mut S,
+        client_id: Uuid,
+        server_verifying_key: &[u8],
     ) -> Result<TrafficSecrets, MlsHandshakeError> {
         let connection = self.connection.lock().await;
 
@@ -131,12 +126,11 @@ impl Handshake for MlsHandshake {
         // TODO: Check here if we can load a `ClientHandshakeState` from the database
         // and resume the handshake.
 
-        let profile_id = Uuid::new_v4();
         let (handshake_state, client_hello) = ClientHandshake::start(
             &connection,
             &self.leaf_signer,
-            self.root_certificate.clone(),
-            profile_id,
+            server_verifying_key.into(),
+            client_id,
         )?;
         tx.send(Bytes::from(client_hello))
             .await
@@ -227,16 +221,10 @@ impl CompletedHandshake for MlsHandshake {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        authentication::root_certificate::{RootCertificateSigner, SERVER_ROOT_IDENTITY},
-        tls_aead::codec::TlsFrameCodec,
-    };
+    use crate::{authentication::LEAF_SIGNATURE_SCHEME, tls_aead::codec::TlsFrameCodec};
 
     use super::*;
-    use chrono::Utc;
     use futures::TryStreamExt;
-    use rand_chacha::ChaCha20Rng;
-    use rand_core::SeedableRng;
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use tokio_util::codec::{FramedRead, FramedWrite};
@@ -255,46 +243,33 @@ mod tests {
         let mut server_framed_tx = FramedWrite::new(server_tx, TlsFrameCodec)
             .sink_map_err(|e| MlsHandshakeError::TransportError(e.into()));
 
-        let seed_passphrase = [0u8; 32];
-        let now = Utc::now();
-        let rng = &mut ChaCha20Rng::from_seed(seed_passphrase);
-
-        let root_signer =
-            RootCertificateSigner::new_with_time_and_rng(now, rng, SERVER_ROOT_IDENTITY)
-                .expect("failed to create root signer");
-
-        let server_signer = root_signer
-            .issue_new_leaf_with_time_and_rng("server", now, rng)
-            .expect("failed to create server signer");
-        let client_signer = root_signer
-            .issue_new_leaf_with_time_and_rng("client", now, rng)
-            .expect("failed to create client signer");
-
         let mut client_connection = Connection::open_in_memory().unwrap();
         initialize_storage(&mut client_connection).unwrap();
         let mut server_connection = Connection::open_in_memory().unwrap();
         initialize_storage(&mut server_connection).unwrap();
 
+        let client_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
+        let server_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
+
         let client_connection = Arc::new(Mutex::new(client_connection));
         let server_connection = Arc::new(Mutex::new(server_connection));
-        let mut client_handshake = MlsHandshake::new(
-            client_connection,
-            client_signer,
-            root_signer.certificate.clone(),
-        );
-        let mut server_handshake = MlsHandshake::new(
-            server_connection,
-            server_signer,
-            root_signer.certificate.clone(),
-        );
+        let mut client_handshake = MlsHandshake::new(client_connection, client_signer);
+        let mut server_handshake = MlsHandshake::new(server_connection, server_signer);
         let client_km = Arc::new(Mutex::new(TrafficSecrets::default()));
         let server_km = Arc::new(Mutex::new(TrafficSecrets::default()));
 
+        let server_verifying_key = server_handshake.leaf_signer.public().to_vec();
         let ckm = client_km.clone();
+        let client_id = Uuid::new_v4();
         let client_task = tokio::spawn(async move {
             let mut tf = ckm.lock().await;
             *tf = client_handshake
-                .client_handshake(&mut client_framed_rx, &mut client_framed_tx)
+                .client_handshake(
+                    &mut client_framed_rx,
+                    &mut client_framed_tx,
+                    client_id,
+                    &server_verifying_key,
+                )
                 .await
                 .unwrap();
             let (secret_update, message) = client_handshake.update_handshake().await.unwrap();
@@ -316,10 +291,12 @@ mod tests {
         let skm = server_km.clone();
         let server_task = tokio::spawn(async move {
             let mut tf = skm.lock().await;
-            (*tf, _) = server_handshake
+            let client_identity;
+            (*tf, client_identity) = server_handshake
                 .server_handshake(&mut server_framed_rx, &mut server_framed_tx)
                 .await
                 .unwrap();
+            assert_eq!(client_identity.0, client_id.as_bytes());
             let message_bytes = server_framed_rx.next().await.unwrap().unwrap();
             let (secret_update, message) = server_handshake
                 .process_signaling_message(&message_bytes.data)

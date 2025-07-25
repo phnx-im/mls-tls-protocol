@@ -2,16 +2,18 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::mls_handshake::{ClientHandshake, ClientHandshakeState, SecretUpdate, ServerHandshake};
+use crate::{
+    authentication::LEAF_SIGNATURE_SCHEME,
+    mls_handshake::{ClientHandshake, ClientHandshakeState, SecretUpdate, ServerHandshake},
+};
 
 use super::*;
 
+use openmls_basic_credential::SignatureKeyPair;
 use openmls_sqlite_storage::Connection;
 
 #[test]
 fn handshake() {
-    let seed = [0u8; 32];
-
     let mut client_connection = Connection::open_in_memory().unwrap();
     ClientHandshakeState::create_table(&client_connection).unwrap();
     let mut server_connection = Connection::open_in_memory().unwrap();
@@ -26,11 +28,19 @@ fn handshake() {
     let test_profile_id = Uuid::new_v4();
 
     // Test initial handshake
-    let (client_state, client_hello, client_leaf_signer) =
-        ClientHandshake::start_from_seed(&mut client_connection, seed, test_profile_id).unwrap();
+    let server_leaf_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
 
-    let (mut server_state, server_traffic_secrets, server_hello, server_leaf_signer) =
-        ServerHandshake::start_from_seed(&mut server_connection, seed, &client_hello).unwrap();
+    let (client_state, client_hello, client_leaf_signer) = ClientHandshake::start_from_seed(
+        &mut client_connection,
+        server_leaf_signer.public().into(),
+        test_profile_id,
+    )
+    .unwrap();
+
+    let (mut server_state, server_traffic_secrets, client_identity, server_hello) =
+        ServerHandshake::start(&mut server_connection, &server_leaf_signer, &client_hello).unwrap();
+
+    assert_eq!(client_identity.0, test_profile_id.as_bytes());
 
     let (mut client_state, client_traffic_secrets) = client_state
         .receive_server_hello(&client_connection, &server_hello)
@@ -136,8 +146,10 @@ fn handshake() {
         .resume(&mut client_connection, &client_leaf_signer)
         .unwrap();
 
-    let (mut server_state, server_traffic_secrets, connection_confirmation, _) =
-        ServerHandshake::start_from_seed(&mut server_connection, seed, &resumption).unwrap();
+    let (mut server_state, server_traffic_secrets, client_identity, connection_confirmation) =
+        ServerHandshake::start(&mut server_connection, &server_leaf_signer, &resumption).unwrap();
+
+    assert_eq!(client_identity.0, test_profile_id.as_bytes());
 
     let (secret_upate, messages_bytes) = client_state
         .receive_signaling_message(
@@ -225,8 +237,10 @@ fn handshake() {
     assert_eq!(client_secret, client_traffic_secrets.client_secret);
 
     // The server receives the resumption
-    let (mut _server_state, server_traffic_secrets, connection_confirmation, _) =
-        ServerHandshake::start_from_seed(&mut server_connection, seed, &resumption).unwrap();
+    let (mut _server_state, server_traffic_secrets, client_identity, connection_confirmation) =
+        ServerHandshake::start(&mut server_connection, &server_leaf_signer, &resumption).unwrap();
+
+    assert_eq!(client_identity.0, test_profile_id.as_bytes());
 
     // Secrets should match
     assert_eq!(client_traffic_secrets, server_traffic_secrets);

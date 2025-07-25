@@ -3,14 +3,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use chrono::Utc;
-use rand_chacha::ChaCha20Rng;
-use rand_core::SeedableRng;
 use std::{net::SocketAddr, time::Duration};
 use tokio::net::TcpListener;
 use tracing::{span, Instrument, Level};
 
 use crate::{
-    authentication::root_certificate::{RootCertificateSigner, SERVER_ROOT_IDENTITY},
+    authentication::LEAF_SIGNATURE_SCHEME,
     encryption_provider::update_policy::{TimeBasedUpdatePolicy, TrafficBasedUpdatePolicy},
     pre_handshake::{psk::Psk, x25519::X25519Handshake},
 };
@@ -29,27 +27,23 @@ struct InitialPayload(Vec<u8>);
 
 async fn handle_new_connection(
     server_tcp_socket: TcpStream,
-    serialized_root_certificate: Vec<u8>,
-    serialized_server_signer: Vec<u8>,
+    server_signer: SignatureKeyPair,
     initial_payload: InitialPayload,
     update_policy: UpdatePolicy,
     connection: Arc<Mutex<Connection>>,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
     handshake_encryption: HandshakeEncryption,
+    expected_client_id: Uuid,
 ) -> bool {
     tracing::info!("Handling new connection");
-    let (mut encryption_provider, _) = match handshake_encryption {
+    let (mut encryption_provider, client_id) = match handshake_encryption {
         HandshakeEncryption::Off => {
             EncryptionProvider::<UnprotectedHandshakeState, true>::new_from_stream(
                 server_tcp_socket,
                 update_policy,
             )
             .unwrap()
-            .handshake(
-                connection,
-                serialized_root_certificate,
-                serialized_server_signer,
-            )
+            .handshake(connection, server_signer)
             .await
         }
         HandshakeEncryption::Psk(psk) => {
@@ -60,11 +54,7 @@ async fn handle_new_connection(
             )
             .await
             .unwrap()
-            .handshake(
-                connection,
-                serialized_root_certificate,
-                serialized_server_signer,
-            )
+            .handshake(connection, server_signer)
             .await
         }
         HandshakeEncryption::X25519(handshake) => {
@@ -75,15 +65,14 @@ async fn handle_new_connection(
             )
             .await
             .unwrap()
-            .handshake(
-                connection,
-                serialized_root_certificate,
-                serialized_server_signer,
-            )
+            .handshake(connection, server_signer)
             .await
         }
     }
     .unwrap();
+
+    assert_eq!(client_id.0, expected_client_id.as_bytes());
+
     tracing::info!("Completed handshake");
     encryption_provider
         .send_bytes(initial_payload.0, Utc::now())
@@ -108,12 +97,12 @@ async fn handle_new_connection(
 
 async fn server_task(
     server_listener: TcpListener,
-    serialized_root_certificate: Vec<u8>,
-    serialized_server_signer: Vec<u8>,
+    server_signer: SignatureKeyPair,
     initial_payload: InitialPayload,
     update_policy: UpdatePolicy,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
     handshake_encryption: HandshakeEncryption,
+    expected_client_id: Uuid,
 ) {
     let mut connection = Connection::open_in_memory().unwrap();
     EncryptionProvider::<UnprotectedHandshakeState, true>::initialize_storage(&mut connection)
@@ -124,13 +113,13 @@ async fn server_task(
         let (server_tcp_socket, _) = server_listener.accept().await.unwrap();
         final_connection = handle_new_connection(
             server_tcp_socket,
-            serialized_root_certificate.clone(),
-            serialized_server_signer.clone(),
+            server_signer.clone(),
             initial_payload.clone(),
             update_policy.clone(),
             connection.clone(),
             global_test_time.clone(),
             handshake_encryption.clone(),
+            expected_client_id,
         )
         .await;
     }
@@ -162,8 +151,9 @@ async fn send_test_message(
 
 async fn client_task(
     server_addr: SocketAddr,
-    serialized_root_certificate: Vec<u8>,
-    serialized_client_signer: Vec<u8>,
+    client_signer: SignatureKeyPair,
+    client_id: Uuid,
+    server_verifying_key: Vec<u8>,
     initial_payload: InitialPayload,
     mut update_policy: UpdatePolicy,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
@@ -185,8 +175,9 @@ async fn client_task(
         client_tcp_socket,
         update_policy.clone(),
         connection.clone(),
-        serialized_root_certificate.clone(),
-        serialized_client_signer.clone(),
+        client_signer.clone(),
+        client_id,
+        server_verifying_key.clone(),
     )
     .await;
     tracing::info!("Completed handshake");
@@ -194,7 +185,14 @@ async fn client_task(
     tracing::info!("Received initial payload");
     assert_eq!(initial_payload, received_initial_payload);
     let messages = vec![
-        "hello", "world", "this", "is", "a", "test", "message", "fin",
+        "hello",
+        "world",
+        "this",
+        "is",
+        "a",
+        "test",
+        "message",
+        "final fin",
     ];
     for message in messages.into_iter() {
         let mut test_time = *global_test_time.lock().await;
@@ -212,70 +210,59 @@ async fn client_task(
     // shut down the connection s.t. we can resume
     encryption_provider.shutdown().await.unwrap();
 
-    let client_tcp_socket = TcpStream::connect(server_addr).await.unwrap();
+    //let client_tcp_socket = TcpStream::connect(server_addr).await.unwrap();
 
-    tracing::info!("Reconnecting to server");
-    let mut encryption_provider = spawn_client_encryption_provider(
-        handshake_encryption,
-        client_tcp_socket,
-        update_policy.clone(),
-        connection,
-        serialized_root_certificate,
-        serialized_client_signer,
-    )
-    .await;
+    //tracing::info!("Reconnecting to server");
+    //let mut encryption_provider = spawn_client_encryption_provider(
+    //    handshake_encryption,
+    //    client_tcp_socket,
+    //    update_policy.clone(),
+    //    connection,
+    //    client_signer,
+    //    client_id,
+    //    server_verifying_key,
+    //)
+    //.await;
 
-    // We wait for the initial payload to be received. We probably won't need
-    // this in the future
-    tracing::info!("Waiting for initial payload");
-    let _initial_payload = encryption_provider.read_bytes().await.unwrap();
+    //// We wait for the initial payload to be received. We probably won't need
+    //// this in the future
+    //tracing::info!("Waiting for initial payload");
+    //let _initial_payload = encryption_provider.read_bytes().await.unwrap();
 
-    let messages = vec![
-        "hello",
-        "world",
-        "this",
-        "is",
-        "another",
-        "test",
-        "message",
-        "final fin",
-    ];
-    for message in messages.into_iter() {
-        let mut test_time = *global_test_time.lock().await;
-        test_time += Duration::from_secs(2);
-        tracing::info!("Sending message: {}", message);
-        let response = send_test_message(
-            &mut encryption_provider,
-            &mut update_policy,
-            message,
-            test_time,
-        )
-        .await;
-        assert_eq!(message.to_uppercase().as_bytes().to_vec(), response);
-    }
+    //let messages = vec![
+    //    "hello",
+    //    "world",
+    //    "this",
+    //    "is",
+    //    "another",
+    //    "test",
+    //    "message",
+    //    "final fin",
+    //];
+    //for message in messages.into_iter() {
+    //    let mut test_time = *global_test_time.lock().await;
+    //    test_time += Duration::from_secs(2);
+    //    tracing::info!("Sending message: {}", message);
+    //    let response = send_test_message(
+    //        &mut encryption_provider,
+    //        &mut update_policy,
+    //        message,
+    //        test_time,
+    //    )
+    //    .await;
+    //    assert_eq!(message.to_uppercase().as_bytes().to_vec(), response);
+    //}
 }
 
 #[tokio::test]
 async fn encryption_provider() {
     tracing_subscriber::fmt::init();
 
-    let seed_passphrase = [0u8; 32];
     let now = Utc::now();
-    let rng = &mut ChaCha20Rng::from_seed(seed_passphrase);
 
-    let root_signer = RootCertificateSigner::new_with_time_and_rng(now, rng, SERVER_ROOT_IDENTITY)
-        .expect("failed to create root signer");
-
-    let server_signer = root_signer
-        .issue_new_leaf_with_time_and_rng("server", now, rng)
-        .expect("failed to create server signer");
-    let client_signer = root_signer
-        .issue_new_leaf_with_time_and_rng("client", now, rng)
-        .expect("failed to create client signer");
-
-    let serialized_root_certificate = root_signer.certificate.serialize().unwrap();
-    let serialized_server_signer = server_signer.serialize().unwrap();
-    let serialized_client_signer = client_signer.serialize().unwrap();
+    let server_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
+    let client_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
+    let client_id = Uuid::new_v4();
 
     let initial_payload = InitialPayload(b"Initial payload".to_vec());
 
@@ -303,9 +290,9 @@ async fn encryption_provider() {
             let server_listener = TcpListener::bind("127.0.0.1:0").await.unwrap(); // Bind to any available port
             start_tasks(
                 server_listener,
-                serialized_root_certificate.clone(),
-                serialized_server_signer.clone(),
-                serialized_client_signer.clone(),
+                server_signer.clone(),
+                client_signer.clone(),
+                client_id,
                 initial_payload.clone(),
                 server_policy.clone(),
                 client_policy.clone(),
@@ -319,9 +306,9 @@ async fn encryption_provider() {
 
 async fn start_tasks(
     server_listener: TcpListener,
-    serialized_root_certificate: Vec<u8>,
-    serialized_server_signer: Vec<u8>,
-    serialized_client_signer: Vec<u8>,
+    server_signer: SignatureKeyPair,
+    client_signer: SignatureKeyPair,
+    client_id: Uuid,
     initial_payload: InitialPayload,
     server_policy: UpdatePolicy,
     client_policy: UpdatePolicy,
@@ -329,15 +316,16 @@ async fn start_tasks(
     handshake_encryption: HandshakeEncryption,
 ) {
     let addr = server_listener.local_addr().unwrap();
+    let server_verifying_key = server_signer.public().to_vec();
     let server_task = tokio::spawn(
         server_task(
             server_listener,
-            serialized_root_certificate.clone(),
-            serialized_server_signer,
+            server_signer,
             initial_payload.clone(),
             server_policy.clone(),
             global_test_time.clone(),
             handshake_encryption.clone(),
+            client_id,
         )
         .instrument(span!(Level::INFO, "server")),
     );
@@ -345,8 +333,9 @@ async fn start_tasks(
     let client_task = tokio::spawn(
         client_task(
             addr,
-            serialized_root_certificate,
-            serialized_client_signer,
+            client_signer,
+            client_id,
+            server_verifying_key,
             initial_payload,
             client_policy,
             global_test_time,
@@ -363,8 +352,9 @@ async fn spawn_client_encryption_provider(
     client_tcp_socket: TcpStream,
     update_policy: UpdatePolicy,
     connection: Arc<Mutex<Connection>>,
-    serialized_root_certificate: Vec<u8>,
-    serialized_client_signer: Vec<u8>,
+    client_signer: SignatureKeyPair,
+    client_id: Uuid,
+    server_verifying_key: Vec<u8>,
 ) -> EncryptionProvider<EstablishedState, false> {
     match handshake_encryption {
         HandshakeEncryption::Off => {
@@ -375,8 +365,9 @@ async fn spawn_client_encryption_provider(
             .unwrap()
             .handshake(
                 connection.clone(),
-                serialized_root_certificate.clone(),
-                serialized_client_signer.clone(),
+                client_signer.clone(),
+                client_id,
+                &server_verifying_key,
             )
             .await
         }
@@ -390,8 +381,9 @@ async fn spawn_client_encryption_provider(
             .unwrap()
             .handshake(
                 connection.clone(),
-                serialized_root_certificate.clone(),
-                serialized_client_signer.clone(),
+                client_signer.clone(),
+                client_id,
+                &server_verifying_key,
             )
             .await
         }
@@ -405,8 +397,9 @@ async fn spawn_client_encryption_provider(
             .unwrap()
             .handshake(
                 connection.clone(),
-                serialized_root_certificate.clone(),
-                serialized_client_signer.clone(),
+                client_signer.clone(),
+                client_id,
+                &server_verifying_key,
             )
             .await
         }

@@ -17,10 +17,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    authentication::{
-        leaf_certificate::LeafCertificateSigner, root_certificate::RootCertificate,
-        CertificateError, VerificationError,
-    },
+    authentication::VerificationError,
     mls_handshake::messages::{ClientHelloOut, ServerHelloOut, SignalingMessageIn},
     tls_aead::{ClientSecret, ServerSecret, TrafficSecrets},
 };
@@ -82,8 +79,6 @@ type BoxedError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 #[derive(Debug, Error)]
 pub enum HandshakeError {
-    #[error(transparent)]
-    CertificateError(#[from] CertificateError),
     #[error(transparent)]
     CodecError(#[from] tls_codec::Error),
     #[error("Wrong protocol version")]
