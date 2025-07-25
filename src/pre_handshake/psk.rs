@@ -29,15 +29,21 @@ impl PreHandshake for Psk {
         &mut self,
         _rx: &mut R,
         _tx: &mut W,
-    ) -> Result<Vec<u8>, Self::Error> {
-        Ok(self.key.clone())
+    ) -> Result<HandshakePayload, Self::Error> {
+        Ok(HandshakePayload {
+            shared_secret: self.key.clone(),
+            session_id: None,
+        })
     }
 
     async fn server_handshake<W: AsyncWrite + Unpin, R: AsyncRead + Unpin>(
         &mut self,
         _rx: &mut R,
         _tx: &mut W,
-    ) -> Result<Vec<u8>, Self::Error> {
-        Ok(self.key.clone())
+    ) -> Result<HandshakePayload, Self::Error> {
+        Ok(HandshakePayload {
+            shared_secret: self.key.clone(),
+            session_id: None,
+        })
     }
 }

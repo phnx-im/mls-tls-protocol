@@ -8,6 +8,8 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
+use crate::pre_handshake::HandshakePayload;
+
 use super::PreHandshake;
 
 const X25519_PUBLIC_KEY_LENGTH: usize = 32;
@@ -35,7 +37,7 @@ impl PreHandshake for X25519Handshake {
         &mut self,
         rx: &mut R,
         tx: &mut W,
-    ) -> Result<Vec<u8>, Self::Error> {
+    ) -> Result<HandshakePayload, Self::Error> {
         let mut rng = ChaCha20Rng::from_rng(OsRng)?;
         let private_key = EphemeralSecret::random_from_rng(&mut rng);
 
@@ -49,14 +51,17 @@ impl PreHandshake for X25519Handshake {
         let server_pk = server_pk_bytes.into();
         let shared_secret = private_key.diffie_hellman(&server_pk);
 
-        Ok(shared_secret.to_bytes().to_vec())
+        Ok(HandshakePayload {
+            shared_secret: shared_secret.to_bytes().to_vec(),
+            session_id: None,
+        })
     }
 
     async fn server_handshake<W: AsyncWrite + Unpin, R: AsyncRead + Unpin>(
         &mut self,
         rx: &mut R,
         tx: &mut W,
-    ) -> Result<Vec<u8>, Self::Error> {
+    ) -> Result<HandshakePayload, Self::Error> {
         let mut client_pk_bytes = [0u8; X25519_PUBLIC_KEY_LENGTH];
         rx.read_exact(&mut client_pk_bytes).await?;
         let client_pk = client_pk_bytes.into();
@@ -69,6 +74,9 @@ impl PreHandshake for X25519Handshake {
 
         let shared_secret = private_key.diffie_hellman(&client_pk);
 
-        Ok(shared_secret.to_bytes().to_vec())
+        Ok(HandshakePayload {
+            shared_secret: shared_secret.to_bytes().to_vec(),
+            session_id: None,
+        })
     }
 }
