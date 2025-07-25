@@ -113,6 +113,14 @@ impl ProtectedChannels {
 
 pub struct ProtectedHandshakeState {
     channels: ProtectedChannels,
+    session_id: Option<Uuid>,
+}
+
+impl ProtectedHandshakeState {
+    /// Session ID negotiated during the handshake, if any was negotiated.
+    pub fn session_id(&self) -> Option<Uuid> {
+        self.session_id
+    }
 }
 
 #[trait_variant::make(Send)]
@@ -244,6 +252,12 @@ pub struct EncryptionProvider<State, const IS_SERVER: bool> {
     update_policy: UpdatePolicy,
 }
 
+impl<State, const IS_SERVER: bool> EncryptionProvider<State, IS_SERVER> {
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+}
+
 impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SERVER> {
     pub fn new_from_stream(
         socket: TcpStream,
@@ -270,7 +284,7 @@ impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SER
         let address = socket.peer_addr()?.to_string();
         let (mut reader, mut writer) = TcpStream::into_split(socket);
 
-        let pre_hs_secret = if IS_SERVER {
+        let payload = if IS_SERVER {
             pre_handshake
                 .server_handshake(&mut reader, &mut writer)
                 .await
@@ -281,7 +295,7 @@ impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SER
         }
         .map_err(|e| EncryptionProviderError::PreHandshakeError(e.into()))?;
 
-        let traffic_secrets = derive_traffic_secrets(&pre_hs_secret)?;
+        let traffic_secrets = derive_traffic_secrets(&payload.shared_secret)?;
 
         let channels = ProtectedChannels::new::<IS_SERVER>(
             FramedRead::new(reader, TlsFrameCodec),
@@ -289,7 +303,10 @@ impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SER
             traffic_secrets,
         )?;
 
-        let state = ProtectedHandshakeState { channels };
+        let state = ProtectedHandshakeState {
+            channels,
+            session_id: payload.session_id,
+        };
 
         let provider = EncryptionProvider {
             state,
@@ -398,6 +415,38 @@ impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
                 None => {
                     return Ok(None);
                 }
+            }
+        }
+    }
+
+    /// Cancel-safe
+    pub async fn read_message(
+        &mut self,
+    ) -> Result<Option<InnerPlaintext>, EncryptionProviderError> {
+        self.next().await.transpose()
+    }
+
+    /// Not cancel-safe
+    pub async fn process_read_message(
+        &mut self,
+        message: InnerPlaintext,
+    ) -> Result<Option<Vec<u8>>, EncryptionProviderError> {
+        match message {
+            InnerPlaintext::Application(b) => Ok(Some(b)),
+            InnerPlaintext::Signaling(signaling_message) => {
+                let (secret_update, response) = self
+                    .state
+                    .handshake
+                    .process_signaling_message(&signaling_message)
+                    .await?;
+                if let Some(signaling_message) = response {
+                    self.send(InnerPlaintext::Signaling(signaling_message))
+                        .await?;
+                }
+                if let Some(secret_update) = secret_update {
+                    self.update_cipher(secret_update)?;
+                }
+                Ok(None)
             }
         }
     }

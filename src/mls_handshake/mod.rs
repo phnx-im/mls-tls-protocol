@@ -24,6 +24,7 @@ use crate::{
     tls_aead::{codec::TlsPacketIn, SecretUpdate, TrafficSecrets},
 };
 
+pub use openmls_provider::Provider;
 pub use state_machine::HandshakeError;
 
 mod messages;
@@ -119,9 +120,10 @@ impl Handshake for MlsHandshake {
         client_id: Uuid,
         server_verifying_key: &[u8],
     ) -> Result<TrafficSecrets, MlsHandshakeError> {
-        let connection = self.connection.lock().await;
+        let mut connection = self.connection.lock().await;
 
         ClientHandshakeState::create_table(&connection)?;
+        ClientHandshakeState::delete(&mut connection, client_id)?;
 
         // TODO: Check here if we can load a `ClientHandshakeState` from the database
         // and resume the handshake.
@@ -209,7 +211,7 @@ impl CompletedHandshake for MlsHandshake {
         match &self.state {
             MlsHandshakeState::None => (),
             MlsHandshakeState::Client(client_handshake_state) => {
-                client_handshake_state.delete(&mut connection)?;
+                ClientHandshakeState::delete(&mut connection, client_handshake_state.profile_id)?;
             }
             MlsHandshakeState::Server(server_handshake_state) => {
                 server_handshake_state.mls_session.delete(&connection)?;
