@@ -14,4 +14,4 @@ pub mod pre_handshake;
 pub mod tls_aead;
 
 // Re-exports
-pub use hpqmls::authentication::HpqSignatureKeyPair;
+pub use hpqmls::authentication::{HpqSignatureKeyPair, HpqSignatureScheme};
