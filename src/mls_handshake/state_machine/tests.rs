@@ -2,14 +2,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::{
-    authentication::LEAF_SIGNATURE_SCHEME,
-    mls_handshake::{ClientHandshake, ClientHandshakeState, SecretUpdate, ServerHandshake},
-};
+use crate::mls_handshake::{ClientHandshake, ClientHandshakeState, SecretUpdate, ServerHandshake};
 
 use super::*;
 
-use openmls_basic_credential::SignatureKeyPair;
+use hpqmls::authentication::{HpqSignatureKeyPair, HpqSigner};
 use openmls_sqlite_storage::Connection;
 
 #[test]
@@ -28,11 +25,11 @@ fn handshake() {
     let test_profile_id = Uuid::new_v4();
 
     // Test initial handshake
-    let server_leaf_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
+    let server_leaf_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into());
 
     let (client_state, client_hello, client_leaf_signer) = ClientHandshake::start_from_seed(
         &mut client_connection,
-        server_leaf_signer.public().into(),
+        server_leaf_signer.verifying_key(),
         test_profile_id,
     )
     .unwrap();

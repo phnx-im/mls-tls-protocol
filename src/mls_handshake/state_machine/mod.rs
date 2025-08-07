@@ -2,13 +2,12 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use hpqmls::HpqCiphersuite;
 use openmls::{
-    group::{ExportSecretError, GroupId, MlsGroup, MlsGroupJoinConfig, StagedWelcome},
+    group::{ExportSecretError, GroupId, MlsGroup, MlsGroupJoinConfig},
     prelude::{
         tls_codec::{self, Deserialize, Serialize},
-        Capabilities, Ciphersuite, CredentialWithKey, KeyPackage, KeyPackageNewError,
-        LeafNodeParameters, MlsMessageBodyIn, MlsMessageIn, ProcessedMessageContent,
-        ProtocolMessage, Sender,
+        Ciphersuite, KeyPackageNewError, MlsMessageBodyIn, OpenMlsCrypto, ProtocolMessage, Sender,
     },
 };
 use openmls_sqlite_storage::Connection;
@@ -38,35 +37,38 @@ pub(super) mod tests;
 
 pub(super) use mls_group::MlsSession;
 
-const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_256_XWING_AES256GCM_SHA512_P384;
+const T_CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_256_DHKEMP384_AES256GCM_SHA384_P384;
+const PQ_CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87;
+pub const CIPHERSUITE: HpqCiphersuite = HpqCiphersuite {
+    t_ciphersuite: T_CIPHERSUITE,
+    pq_ciphersuite: PQ_CIPHERSUITE,
+};
 const SHARED_EXPORT_LABEL: &str = "MLS-TLS 1.0";
 const CLIENT_TRAFFIC_SECRET_LABEL: &str = "Initial Client Traffic Secret";
 const SERVER_TRAFFIC_SECRET_LABEL: &str = "Initial Server Traffic Secret";
+
+const TLS_SECRET_LENGTH: usize = 64;
 
 fn export_label(label: &str) -> String {
     format!("{SHARED_EXPORT_LABEL}{label}")
 }
 
-fn capabilities() -> Capabilities {
-    Capabilities::new(None, Some(&[CIPHERSUITE]), None, None, None)
-}
-
 fn export_traffic_secrets(
-    provider: &impl OpenMlsProvider,
+    provider: &impl OpenMlsCrypto,
     group: &MlsGroup,
 ) -> Result<TrafficSecrets, HandshakeError> {
     let client_secret = group.export_secret(
         provider,
         &export_label(CLIENT_TRAFFIC_SECRET_LABEL),
         &[],
-        group.ciphersuite().hash_length(),
+        TLS_SECRET_LENGTH,
     )?;
 
     let server_secret = group.export_secret(
         provider,
         &export_label(SERVER_TRAFFIC_SECRET_LABEL),
         &[],
-        group.ciphersuite().hash_length(),
+        TLS_SECRET_LENGTH,
     )?;
 
     Ok(TrafficSecrets {

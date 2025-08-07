@@ -4,11 +4,11 @@
 
 use chrono::{DateTime, Utc};
 use futures::{ready, Sink, SinkExt, Stream, StreamExt};
+use hpqmls::authentication::HpqSignatureKeyPair;
 use openmls::prelude::{
     tls_codec::{self, Deserialize, Serialize},
     TlsDeserialize, TlsSerialize, TlsSize,
 };
-use openmls_basic_credential::SignatureKeyPair;
 use openmls_sqlite_storage::Connection;
 use openmls_traits::types::{AeadType, CryptoError, HashType};
 use std::{
@@ -322,7 +322,7 @@ impl<State: PreHandshakeState> EncryptionProvider<State, true> {
     pub async fn handshake(
         self,
         connection: Arc<Mutex<Connection>>,
-        leaf_signer: SignatureKeyPair,
+        leaf_signer: HpqSignatureKeyPair,
     ) -> Result<(EncryptionProvider<EstablishedState, true>, ClientIdentity), EncryptionProviderError>
     {
         let mut handshake = MlsHandshake::new(connection, leaf_signer);
@@ -346,7 +346,7 @@ impl<State: PreHandshakeState> EncryptionProvider<State, false> {
     pub async fn handshake(
         self,
         connection: Arc<Mutex<Connection>>,
-        leaf_signer: SignatureKeyPair,
+        leaf_signer: HpqSignatureKeyPair,
         client_id: Uuid,
         server_verifying_key: &[u8],
     ) -> Result<EncryptionProvider<EstablishedState, false>, EncryptionProviderError> {

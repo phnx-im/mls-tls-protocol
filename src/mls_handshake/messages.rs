@@ -2,9 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use openmls::prelude::{
-    tls_codec, MlsMessageIn, MlsMessageOut, TlsDeserialize, TlsSerialize, TlsSize,
-};
+use hpqmls::messages::{HpqMlsMessageIn, HpqMlsMessageOut};
+use openmls::prelude::{TlsDeserialize, TlsSerialize, TlsSize};
 
 #[repr(u16)]
 #[derive(Debug, TlsDeserialize, TlsSerialize, TlsSize, PartialEq)]
@@ -19,7 +18,7 @@ impl Default for ProtocolVersion {
     }
 }
 
-#[derive(Debug, TlsDeserialize, TlsSerialize, TlsSize)]
+#[derive(Debug, TlsDeserialize, TlsSize)]
 pub(super) struct MlsTlsHandshakeIn {
     pub(super) version: ProtocolVersion,
     pub(super) payload: HandshakePayloadIn,
@@ -32,7 +31,7 @@ pub(super) struct MlsTlsHandshakeOut {
 }
 
 #[repr(u16)]
-#[derive(Debug, TlsDeserialize, TlsSerialize, TlsSize)]
+#[derive(Debug, TlsDeserialize, TlsSize)]
 pub(super) enum HandshakePayloadIn {
     ClientHello(ClientHelloIn),
     Resumption(ResumptionIn),
@@ -46,40 +45,40 @@ pub(super) enum HandshakePayloadOut {
     Resumption(ResumptionOut),
 }
 
-#[derive(Debug, TlsDeserialize, TlsSerialize, TlsSize)]
+#[derive(Debug, TlsDeserialize, TlsSize)]
 pub(super) struct ClientHelloIn {
-    pub(super) key_package: MlsMessageIn,
+    pub(super) key_package: HpqMlsMessageIn,
 }
 
 #[derive(Debug, TlsSerialize, TlsSize)]
 pub(super) struct ClientHelloOut {
-    pub(super) key_package: MlsMessageOut,
+    pub(super) key_package: HpqMlsMessageOut,
 }
 
-#[derive(Debug, TlsDeserialize, TlsSerialize, TlsSize)]
+#[derive(Debug, TlsDeserialize, TlsSize)]
 pub(super) struct ServerHelloIn {
-    pub(super) welcome: MlsMessageIn,
+    pub(super) welcome: HpqMlsMessageIn,
 }
 
 #[derive(Debug, TlsSerialize, TlsSize)]
 pub(super) struct ServerHelloOut {
-    pub(super) welcome: MlsMessageOut,
+    pub(super) welcome: HpqMlsMessageOut,
 }
 
-#[derive(Debug, TlsDeserialize, TlsSerialize, TlsSize)]
+#[derive(Debug, TlsDeserialize, TlsSize)]
 pub(super) struct ResumptionIn {
-    pub(super) commit: MlsMessageIn,
+    pub(super) commit: HpqMlsMessageIn,
 }
 
 #[derive(Debug, TlsSerialize, TlsSize)]
 pub(super) struct ResumptionOut {
-    pub(super) commit: MlsMessageOut,
+    pub(super) commit: HpqMlsMessageOut,
 }
 
 // === In-band data & signaling ===
 
 #[repr(u16)]
-#[derive(Debug, TlsDeserialize, TlsSerialize, TlsSize)]
+#[derive(Debug, TlsDeserialize, TlsSize)]
 #[allow(clippy::large_enum_variant)]
 pub(super) enum SignalingMessageIn {
     ConnectionUpdate(ConnectionUpdateIn),
@@ -115,16 +114,16 @@ pub(super) struct EpochKeyUpdate {
     pub(super) epoch: u64,
 }
 
-#[derive(Debug, TlsDeserialize, TlsSerialize, TlsSize)]
+#[derive(Debug, TlsDeserialize, TlsSize)]
 pub(super) struct ConnectionUpdateIn {
     pub(super) update_requested: Boolean,
-    pub(super) mls_commit: MlsMessageIn,
+    pub(super) mls_commit: HpqMlsMessageIn,
 }
 
 #[derive(Debug, TlsSerialize, TlsSize)]
 pub(super) struct ConnectionUpdateOut {
     pub(super) update_requested: Boolean,
-    pub(super) mls_commit: MlsMessageOut,
+    pub(super) mls_commit: HpqMlsMessageOut,
 }
 
 #[derive(Debug, TlsDeserialize, TlsSerialize, TlsSize)]

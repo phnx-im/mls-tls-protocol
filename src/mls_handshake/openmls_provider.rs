@@ -26,7 +26,7 @@ pub struct Provider<ConnectionRef: Borrow<Connection>> {
 
 impl Provider<&'_ mut Connection> {
     pub fn initialize_storage(&mut self) -> Result<(), refinery::Error> {
-        self.storage.initialize()
+        self.storage.run_migrations()
     }
 }
 

@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use chrono::Utc;
+use hpqmls::{authentication::HpqSigner, group_builder::DEFAULT_CIPHERSUITE};
 use std::{net::SocketAddr, time::Duration};
 use tokio::net::TcpListener;
 use tracing::{span, Instrument, Level};
 
 use crate::{
-    authentication::LEAF_SIGNATURE_SCHEME,
     encryption_provider::update_policy::{TimeBasedUpdatePolicy, TrafficBasedUpdatePolicy},
     pre_handshake::{psk::Psk, x25519::X25519Handshake},
 };
@@ -27,7 +27,7 @@ struct InitialPayload(Vec<u8>);
 
 async fn handle_new_connection(
     server_tcp_socket: TcpStream,
-    server_signer: SignatureKeyPair,
+    server_signer: HpqSignatureKeyPair,
     initial_payload: InitialPayload,
     update_policy: UpdatePolicy,
     connection: Arc<Mutex<Connection>>,
@@ -97,7 +97,7 @@ async fn handle_new_connection(
 
 async fn server_task(
     server_listener: TcpListener,
-    server_signer: SignatureKeyPair,
+    server_signer: HpqSignatureKeyPair,
     initial_payload: InitialPayload,
     update_policy: UpdatePolicy,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
@@ -151,7 +151,7 @@ async fn send_test_message(
 
 async fn client_task(
     server_addr: SocketAddr,
-    client_signer: SignatureKeyPair,
+    client_signer: HpqSignatureKeyPair,
     client_id: Uuid,
     server_verifying_key: Vec<u8>,
     initial_payload: InitialPayload,
@@ -260,8 +260,8 @@ async fn encryption_provider() {
 
     let now = Utc::now();
 
-    let server_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
-    let client_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
+    let server_signer = HpqSignatureKeyPair::new(DEFAULT_CIPHERSUITE.into());
+    let client_signer = HpqSignatureKeyPair::new(DEFAULT_CIPHERSUITE.into());
     let client_id = Uuid::new_v4();
 
     let initial_payload = InitialPayload(b"Initial payload".to_vec());
@@ -306,8 +306,8 @@ async fn encryption_provider() {
 
 async fn start_tasks(
     server_listener: TcpListener,
-    server_signer: SignatureKeyPair,
-    client_signer: SignatureKeyPair,
+    server_signer: HpqSignatureKeyPair,
+    client_signer: HpqSignatureKeyPair,
     client_id: Uuid,
     initial_payload: InitialPayload,
     server_policy: UpdatePolicy,
@@ -316,7 +316,10 @@ async fn start_tasks(
     handshake_encryption: HandshakeEncryption,
 ) {
     let addr = server_listener.local_addr().unwrap();
-    let server_verifying_key = server_signer.public().to_vec();
+    let server_verifying_key = server_signer
+        .verifying_key()
+        .tls_serialize_detached()
+        .unwrap();
     let server_task = tokio::spawn(
         server_task(
             server_listener,
@@ -352,7 +355,7 @@ async fn spawn_client_encryption_provider(
     client_tcp_socket: TcpStream,
     update_policy: UpdatePolicy,
     connection: Arc<Mutex<Connection>>,
-    client_signer: SignatureKeyPair,
+    client_signer: HpqSignatureKeyPair,
     client_id: Uuid,
     server_verifying_key: Vec<u8>,
 ) -> EncryptionProvider<EstablishedState, false> {

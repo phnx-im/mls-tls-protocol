@@ -2,11 +2,15 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use hpqmls::{
+    authentication::{HpqCredentialWithKey, HpqSignatureKeyPair, HpqVerifyingKey},
+    messages::{HpqKeyPackage, HpqMlsMessageOut},
+    HpqMlsGroup,
+};
 use openmls::prelude::{
     tls_codec::{Deserialize as _, Serialize as _},
-    BasicCredential, Credential, MlsMessageOut, SignaturePublicKey,
+    LeafNodeIndex,
 };
-use openmls_basic_credential::SignatureKeyPair;
 use serde::{Deserialize, Serialize};
 use std::mem;
 
@@ -23,12 +27,10 @@ impl ClientHandshake {
     #[cfg(test)]
     pub(in crate::mls_handshake) fn start_from_seed(
         connection: &mut Connection,
-        server_verifying_key: SignaturePublicKey,
+        server_verifying_key: HpqVerifyingKey,
         client_id: Uuid,
-    ) -> Result<(WaitingForServerHello, Vec<u8>, SignatureKeyPair), HandshakeError> {
-        use crate::authentication::LEAF_SIGNATURE_SCHEME;
-
-        let leaf_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
+    ) -> Result<(WaitingForServerHello, Vec<u8>, HpqSignatureKeyPair), HandshakeError> {
+        let leaf_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into());
 
         let (waiting_for_server_hello, client_hello_bytes) =
             Self::start(connection, &leaf_signer, server_verifying_key, client_id)?;
@@ -38,27 +40,21 @@ impl ClientHandshake {
 
     pub(in crate::mls_handshake) fn start(
         connection: &Connection,
-        own_signature_keypair: &SignatureKeyPair,
-        server_verifying_key: SignaturePublicKey,
+        own_signature_keypair: &HpqSignatureKeyPair,
+        server_verifying_key: HpqVerifyingKey,
         client_id: Uuid,
     ) -> Result<(WaitingForServerHello, Vec<u8>), HandshakeError> {
         let provider = Provider::from(connection);
-        let basic_credential = BasicCredential::new(client_id.as_bytes().to_vec());
-        let credential = Credential::from(basic_credential);
-        let credential_with_key = CredentialWithKey {
-            credential: credential.clone(),
-            signature_key: own_signature_keypair.public().into(),
-        };
-        let key_package_bundle = KeyPackage::builder()
-            .leaf_node_capabilities(capabilities())
-            .build(
-                CIPHERSUITE,
-                &provider,
-                own_signature_keypair,
-                credential_with_key,
-            )?;
+        let credential_with_key =
+            HpqCredentialWithKey::new(client_id.as_bytes(), own_signature_keypair);
+        let key_package_bundle = HpqKeyPackage::builder().build(
+            &provider,
+            CIPHERSUITE,
+            own_signature_keypair,
+            credential_with_key,
+        )?;
         let client_hello = ClientHelloOut {
-            key_package: key_package_bundle.key_package().clone().into(),
+            key_package: key_package_bundle.into_key_package().clone().into(),
         };
         let handshake_message =
             MlsTlsHandshakeOut::from(HandshakePayloadOut::ClientHello(client_hello));
@@ -75,7 +71,7 @@ impl ClientHandshake {
 
 pub(in crate::mls_handshake) struct WaitingForServerHello {
     profile_id: Uuid,
-    server_verifying_key: SignaturePublicKey,
+    server_verifying_key: HpqVerifyingKey,
 }
 
 impl WaitingForServerHello {
@@ -86,7 +82,7 @@ impl WaitingForServerHello {
     ) -> Result<(ClientHandshakeState, TrafficSecrets), HandshakeError> {
         let server_hello = ServerHelloIn::tls_deserialize_exact(message_bytes)?;
 
-        let MlsMessageBodyIn::Welcome(welcome) = server_hello.welcome.extract() else {
+        let Some(welcome) = server_hello.welcome.into_welcome() else {
             return Err(HandshakeError::UnexpectedMessage {
                 expected: "Welcome",
                 actual: "Unknown",
@@ -98,28 +94,23 @@ impl WaitingForServerHello {
             .build();
         // Join the group
         let provider = Provider::from(connection);
-        let staged_welcome =
-            StagedWelcome::new_from_welcome(&provider, &join_config, welcome, None)
-                .map_err(|_| HandshakeError::ServerHelloError)?;
+        let client_group = HpqMlsGroup::new_from_welcome(&provider, &join_config, welcome, None)
+            .map_err(|_| HandshakeError::ServerHelloError)?;
 
-        if staged_welcome
-            .welcome_sender()
-            .map_err(|_| VerificationError::LibraryError)?
-            .signature_key()
-            != &self.server_verifying_key
+        if client_group
+            .verifying_key_at(LeafNodeIndex::new(0))
+            .ok_or(HandshakeError::ServerHelloError)?
+            != self.server_verifying_key
         {
             return Err(VerificationError::UnexpectedVerifyingKey.into());
         }
-        let client_group = staged_welcome
-            .into_group(&provider)
-            .map_err(|_| HandshakeError::ServerHelloError)?;
 
         let mls_session = MlsSession::new(
             client_group.group_id().clone(),
-            client_group.epoch().as_u64(),
+            client_group.t_group.epoch().as_u64(),
         );
 
-        let traffic_secrets = export_traffic_secrets(&provider, &client_group)?;
+        let traffic_secrets = export_traffic_secrets(provider.crypto(), &client_group.t_group)?;
 
         let handshake_state = ClientHandshakeState {
             mls_session,
@@ -133,7 +124,7 @@ impl WaitingForServerHello {
 
 #[derive(Serialize, Deserialize)]
 struct PendingUpdate {
-    mls_message: MlsMessageOut,
+    mls_message: HpqMlsMessageOut,
     traffic_secrets: TrafficSecrets,
 }
 
@@ -168,7 +159,7 @@ impl ClientHandshakeState {
     pub(in crate::mls_handshake) fn resume(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &SignatureKeyPair,
+        leaf_signer: &HpqSignatureKeyPair,
     ) -> Result<(TrafficSecrets, Vec<u8>), HandshakeError> {
         // If we want to resume and we haven't gotten a confirmation from the
         // server regarding our most recent update, we just resume use that
@@ -222,7 +213,7 @@ impl ClientHandshakeState {
     pub(in crate::mls_handshake) fn update(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &SignatureKeyPair,
+        leaf_signer: &HpqSignatureKeyPair,
         update_requested: bool,
     ) -> Result<(ClientSecret, Vec<u8>), HandshakeError> {
         if self.is_waiting_for_response() {
@@ -253,7 +244,7 @@ impl ClientHandshakeState {
     pub(in crate::mls_handshake) fn receive_signaling_message(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &SignatureKeyPair,
+        leaf_signer: &HpqSignatureKeyPair,
         message_bytes: &[u8],
     ) -> Result<(Option<SecretUpdate>, Option<Vec<u8>>), HandshakeError> {
         let signaling_message = SignalingMessageIn::tls_deserialize_exact(message_bytes)?;
@@ -329,7 +320,7 @@ impl ClientHandshakeState {
     fn process_update(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &SignatureKeyPair,
+        leaf_signer: &HpqSignatureKeyPair,
         connection_update: ConnectionUpdateIn,
     ) -> Result<(ClientSecret, Vec<u8>), HandshakeError> {
         let (mut traffic_secrets, mls_session, _) =

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use openmls_basic_credential::SignatureKeyPair;
+use hpqmls::authentication::HpqSignatureKeyPair;
 
 use crate::{
     handshake::ClientIdentity,
@@ -16,7 +16,7 @@ pub(in crate::mls_handshake) struct ServerHandshake;
 impl ServerHandshake {
     pub(in crate::mls_handshake) fn start(
         connection: &mut Connection,
-        leaf_signer: &SignatureKeyPair,
+        leaf_signer: &HpqSignatureKeyPair,
         message_bytes: &[u8],
     ) -> Result<
         (
@@ -41,7 +41,7 @@ impl ServerHandshake {
 
     fn process_client_hello(
         connection: &mut Connection,
-        leaf_signer: &SignatureKeyPair,
+        leaf_signer: &HpqSignatureKeyPair,
         client_hello: ClientHelloIn,
     ) -> Result<
         (
@@ -52,8 +52,7 @@ impl ServerHandshake {
         ),
         HandshakeError,
     > {
-        let MlsMessageBodyIn::KeyPackage(key_package_in) = client_hello.key_package.extract()
-        else {
+        let Some(key_package_in) = client_hello.key_package.into_key_package() else {
             return Err(HandshakeError::UnexpectedMessage {
                 expected: "KeyPackage",
                 actual: "Unknown",
@@ -136,7 +135,7 @@ impl ServerHandshakeState {
     pub(in crate::mls_handshake) fn update(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &SignatureKeyPair,
+        leaf_signer: &HpqSignatureKeyPair,
         update_requested: bool,
     ) -> Result<Vec<u8>, HandshakeError> {
         if self.is_waiting_for_response() {
@@ -159,7 +158,7 @@ impl ServerHandshakeState {
     pub(in crate::mls_handshake) fn receive_signaling_message(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &SignatureKeyPair,
+        leaf_signer: &HpqSignatureKeyPair,
         message_bytes: &[u8],
     ) -> Result<(TrafficSecrets, Option<Vec<u8>>), HandshakeError> {
         let signaling_message = SignalingMessageIn::tls_deserialize_exact(message_bytes)?;
@@ -200,11 +199,13 @@ impl ServerHandshakeState {
     fn process_update(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &SignatureKeyPair,
+        leaf_signer: &HpqSignatureKeyPair,
         connection_update: ConnectionUpdateIn,
     ) -> Result<(TrafficSecrets, Vec<u8>), HandshakeError> {
+        println!("Processing connection update");
         let (traffic_secrets, mls_session, _client_identity) =
             MlsSession::process_mls_update(connection, connection_update.mls_commit, true)?;
+        println!("Done processing MLS update");
 
         // Client updates override any internal state, so after receiving one,
         // we're no longer waiting for anything

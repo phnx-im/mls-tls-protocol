@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use openmls_basic_credential::SignatureKeyPair;
+use hpqmls::authentication::{HpqSignatureKeyPair, HpqVerifyingKey};
+use openmls::prelude::tls_codec::Deserialize;
 use openmls_rust_crypto::RustCrypto;
 use openmls_sqlite_storage::{Codec, Connection, SqliteStorageProvider};
 use openmls_traits::OpenMlsProvider;
@@ -55,13 +56,13 @@ enum MlsHandshakeState {
 }
 
 pub struct MlsHandshake {
-    leaf_signer: SignatureKeyPair,
+    leaf_signer: HpqSignatureKeyPair,
     connection: Arc<Mutex<Connection>>,
     state: MlsHandshakeState,
 }
 
 impl MlsHandshake {
-    pub fn new(connection: Arc<Mutex<Connection>>, leaf_signer: SignatureKeyPair) -> Self {
+    pub fn new(connection: Arc<Mutex<Connection>>, leaf_signer: HpqSignatureKeyPair) -> Self {
         Self {
             leaf_signer,
             connection,
@@ -128,10 +129,12 @@ impl Handshake for MlsHandshake {
         // TODO: Check here if we can load a `ClientHandshakeState` from the database
         // and resume the handshake.
 
+        let server_verifying_key = HpqVerifyingKey::tls_deserialize_exact(server_verifying_key)
+            .map_err(|_| MlsHandshakeError::DecodingError)?;
         let (handshake_state, client_hello) = ClientHandshake::start(
             &connection,
             &self.leaf_signer,
-            server_verifying_key.into(),
+            server_verifying_key,
             client_id,
         )?;
         tx.send(Bytes::from(client_hello))
@@ -223,10 +226,12 @@ impl CompletedHandshake for MlsHandshake {
 
 #[cfg(test)]
 mod tests {
-    use crate::{authentication::LEAF_SIGNATURE_SCHEME, tls_aead::codec::TlsFrameCodec};
+    use crate::{mls_handshake::state_machine::CIPHERSUITE, tls_aead::codec::TlsFrameCodec};
 
     use super::*;
     use futures::TryStreamExt;
+    use hpqmls::authentication::HpqSigner;
+    use openmls::prelude::tls_codec::Serialize;
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use tokio_util::codec::{FramedRead, FramedWrite};
@@ -250,8 +255,8 @@ mod tests {
         let mut server_connection = Connection::open_in_memory().unwrap();
         initialize_storage(&mut server_connection).unwrap();
 
-        let client_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
-        let server_signer = SignatureKeyPair::new(LEAF_SIGNATURE_SCHEME).unwrap();
+        let client_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into());
+        let server_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into());
 
         let client_connection = Arc::new(Mutex::new(client_connection));
         let server_connection = Arc::new(Mutex::new(server_connection));
@@ -260,7 +265,11 @@ mod tests {
         let client_km = Arc::new(Mutex::new(TrafficSecrets::default()));
         let server_km = Arc::new(Mutex::new(TrafficSecrets::default()));
 
-        let server_verifying_key = server_handshake.leaf_signer.public().to_vec();
+        let server_verifying_key = server_handshake
+            .leaf_signer
+            .verifying_key()
+            .tls_serialize_detached()
+            .unwrap();
         let ckm = client_km.clone();
         let client_id = Uuid::new_v4();
         let client_task = tokio::spawn(async move {
