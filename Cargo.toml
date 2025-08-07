@@ -8,7 +8,7 @@ version = "0.1.1"
 edition = "2021"
 
 [dependencies]
-hpqmls = { version = "0.1.0", path = "../hpqmls" }
+hpqmls = { version = "0.1.0", git = "https://github.com/phnx-im/hpqmls" }
 openmls = { version = "0.7.0", features = [
     "test-utils",
 ], git = "https://github.com/openmls/openmls", branch = "konrad/hpqmls_dep_branch" }
@@ -31,6 +31,7 @@ rusqlite = { version = "0.32", features = ["bundled", "uuid"] }
 refinery = "0.8"
 x25519-dalek = "2.0.1"
 trait-variant = "0.1.2"
+tls_codec = "0.4.2"
 
 
 [dev-dependencies]
