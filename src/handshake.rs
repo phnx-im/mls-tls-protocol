@@ -44,9 +44,14 @@ pub(super) trait Handshake {
 pub(super) trait CompletedHandshake {
     type Error;
 
-    fn epoch(&self) -> u64;
+    fn t_epoch(&self) -> u64;
 
-    async fn update_handshake(&mut self) -> Result<(Option<SecretUpdate>, Vec<u8>), Self::Error>;
+    fn pq_epoch(&self) -> u64;
+
+    async fn update_handshake(
+        &mut self,
+        pq: bool,
+    ) -> Result<(Option<SecretUpdate>, Vec<u8>), Self::Error>;
 
     async fn process_signaling_message(
         &mut self,

@@ -4,12 +4,13 @@
 
 use hpqmls::{
     authentication::{HpqCredentialWithKey, HpqSignatureKeyPair, HpqVerifyingKey},
+    extension::PqtMode,
     messages::{HpqKeyPackage, HpqMlsMessageOut},
     HpqMlsGroup,
 };
 use openmls::prelude::{
     tls_codec::{Deserialize as _, Serialize as _},
-    LeafNodeIndex,
+    LeafNodeIndex, SignatureScheme,
 };
 use serde::{Deserialize, Serialize};
 use std::mem;
@@ -30,7 +31,7 @@ impl ClientHandshake {
         server_verifying_key: HpqVerifyingKey,
         client_id: Uuid,
     ) -> Result<(WaitingForServerHello, Vec<u8>, HpqSignatureKeyPair), HandshakeError> {
-        let leaf_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into());
+        let leaf_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into()).unwrap();
 
         let (waiting_for_server_hello, client_hello_bytes) =
             Self::start(connection, &leaf_signer, server_verifying_key, client_id)?;
@@ -47,9 +48,17 @@ impl ClientHandshake {
         let provider = Provider::from(connection);
         let credential_with_key =
             HpqCredentialWithKey::new(client_id.as_bytes(), own_signature_keypair);
+        let ciphersuite = if matches!(
+            own_signature_keypair.pq_signer.signature_scheme(),
+            SignatureScheme::MLDSA87
+        ) {
+            PqtMode::ConfAndAuth.default_ciphersuite()
+        } else {
+            PqtMode::ConfOnly.default_ciphersuite()
+        };
         let key_package_bundle = HpqKeyPackage::builder().build(
             &provider,
-            CIPHERSUITE,
+            ciphersuite,
             own_signature_keypair,
             credential_with_key,
         )?;
@@ -108,6 +117,7 @@ impl WaitingForServerHello {
         let mls_session = MlsSession::new(
             client_group.group_id().clone(),
             client_group.t_group.epoch().as_u64(),
+            client_group.pq_group.epoch().as_u64(),
         );
 
         let traffic_secrets = export_traffic_secrets(provider.crypto(), &client_group.t_group)?;
@@ -152,7 +162,7 @@ pub(crate) struct ClientHandshakeState {
 
 impl ClientHandshakeState {
     pub fn epoch(&self) -> u64 {
-        self.mls_session.epoch
+        self.mls_session.t_epoch
     }
 
     #[allow(dead_code)]
@@ -171,9 +181,10 @@ impl ClientHandshakeState {
             ClientInternalState::WaitingForEpochKeyUpdateReturn(_)
             // If the state is "Running", we just do a fresh update
             | ClientInternalState::Running => {
+                let pq = true; // Always do a PQ update when resuming a connection
                 let mls_message = self
                     .mls_session
-                    .update(connection, leaf_signer)
+                    .update(connection, leaf_signer, pq)
                     .map_err(|e| HandshakeError::ResumptionError(e.into()))?;
 
                 let traffic_secrets = self.mls_session.merge_update(connection)?;
@@ -215,11 +226,12 @@ impl ClientHandshakeState {
         connection: &mut Connection,
         leaf_signer: &HpqSignatureKeyPair,
         update_requested: bool,
+        pq: bool,
     ) -> Result<(ClientSecret, Vec<u8>), HandshakeError> {
         if self.is_waiting_for_response() {
             return Err(HandshakeError::WaitingForResponse);
         }
-        let mls_message = self.mls_session.update(connection, leaf_signer)?;
+        let mls_message = self.mls_session.update(connection, leaf_signer, pq)?;
         let traffic_secrets = self.mls_session.merge_update(connection)?;
 
         let connection_update = SignalingMessageOut::ConnectionUpdate(ConnectionUpdateOut {
@@ -331,7 +343,8 @@ impl ClientHandshakeState {
         let mut response_bytes = self.create_epoch_key_update(connection)?;
 
         if connection_update.update_requested.into() {
-            let connection_update = self.mls_session.update(connection, leaf_signer)?;
+            let pq = false; // For now, only T update can be requested
+            let connection_update = self.mls_session.update(connection, leaf_signer, pq)?;
 
             let new_traffic_secrets = self.mls_session.merge_update(connection)?;
 

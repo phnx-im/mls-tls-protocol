@@ -161,7 +161,7 @@ impl Handshake for MlsHandshake {
 impl CompletedHandshake for MlsHandshake {
     type Error = MlsHandshakeError;
 
-    fn epoch(&self) -> u64 {
+    fn t_epoch(&self) -> u64 {
         match &self.state {
             MlsHandshakeState::None => 0,
             MlsHandshakeState::Client(client_handshake_state) => client_handshake_state.epoch(),
@@ -169,13 +169,24 @@ impl CompletedHandshake for MlsHandshake {
         }
     }
 
-    async fn update_handshake(&mut self) -> Result<(Option<SecretUpdate>, Vec<u8>), Self::Error> {
+    fn pq_epoch(&self) -> u64 {
+        match &self.state {
+            MlsHandshakeState::None => 0,
+            MlsHandshakeState::Client(client_handshake_state) => client_handshake_state.epoch(),
+            MlsHandshakeState::Server(server_handshake_state) => server_handshake_state.epoch(),
+        }
+    }
+
+    async fn update_handshake(
+        &mut self,
+        pq: bool,
+    ) -> Result<(Option<SecretUpdate>, Vec<u8>), Self::Error> {
         let mut connection = self.connection.lock().await;
         match &mut self.state {
             MlsHandshakeState::None => Err(MlsHandshakeError::Uninitialized),
             MlsHandshakeState::Client(client_handshake_state) => {
                 let (client_secret, message_bytes) =
-                    client_handshake_state.update(&mut connection, &self.leaf_signer, false)?;
+                    client_handshake_state.update(&mut connection, &self.leaf_signer, false, pq)?;
                 Ok((
                     Some(SecretUpdate::ClientSecret(client_secret)),
                     message_bytes,
@@ -183,7 +194,7 @@ impl CompletedHandshake for MlsHandshake {
             }
             MlsHandshakeState::Server(server_handshake_state) => {
                 let message_bytes =
-                    server_handshake_state.update(&mut connection, &self.leaf_signer, false)?;
+                    server_handshake_state.update(&mut connection, &self.leaf_signer, false, pq)?;
                 Ok((None, message_bytes))
             }
         }
@@ -255,8 +266,8 @@ mod tests {
         let mut server_connection = Connection::open_in_memory().unwrap();
         initialize_storage(&mut server_connection).unwrap();
 
-        let client_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into());
-        let server_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into());
+        let client_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into()).unwrap();
+        let server_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into()).unwrap();
 
         let client_connection = Arc::new(Mutex::new(client_connection));
         let server_connection = Arc::new(Mutex::new(server_connection));
@@ -283,7 +294,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let (secret_update, message) = client_handshake.update_handshake().await.unwrap();
+            let (secret_update, message) = client_handshake.update_handshake(false).await.unwrap();
             if let Some(secret_update) = secret_update {
                 tf.update(secret_update);
             }

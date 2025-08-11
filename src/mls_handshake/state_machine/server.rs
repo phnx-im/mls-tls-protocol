@@ -125,7 +125,7 @@ impl HandshakeState for ServerHandshakeState {
 
 impl ServerHandshakeState {
     pub(in crate::mls_handshake) fn epoch(&self) -> u64 {
-        self.mls_session.epoch
+        self.mls_session.t_epoch
     }
 
     fn is_waiting_for_response(&self) -> bool {
@@ -137,11 +137,12 @@ impl ServerHandshakeState {
         connection: &mut Connection,
         leaf_signer: &HpqSignatureKeyPair,
         update_requested: bool,
+        pq: bool,
     ) -> Result<Vec<u8>, HandshakeError> {
         if self.is_waiting_for_response() {
             return Err(HandshakeError::WaitingForResponse);
         }
-        let mls_message = self.mls_session.update(connection, leaf_signer)?;
+        let mls_message = self.mls_session.update(connection, leaf_signer, pq)?;
 
         let connection_update = SignalingMessageOut::ConnectionUpdate(ConnectionUpdateOut {
             update_requested: update_requested.into(),
@@ -216,7 +217,8 @@ impl ServerHandshakeState {
         let mut response_bytes = self.create_epoch_key_update(connection)?;
 
         if connection_update.update_requested.into() {
-            let mls_commit = self.mls_session.update(connection, leaf_signer)?;
+            let pq = false; // For now, only T update can be requested
+            let mls_commit = self.mls_session.update(connection, leaf_signer, pq)?;
 
             // We're sending an update, so we're now waiting for a response
             self.internal_state = ServerInternalState::WaitingForUpdate;

@@ -3,13 +3,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use chrono::Utc;
-use hpqmls::{authentication::HpqSigner, group_builder::DEFAULT_CIPHERSUITE};
+use hpqmls::{authentication::HpqSigner, extension::PqtMode};
 use std::{net::SocketAddr, time::Duration};
 use tokio::net::TcpListener;
 use tracing::{span, Instrument, Level};
 
 use crate::{
-    encryption_provider::update_policy::{TimeBasedUpdatePolicy, TrafficBasedUpdatePolicy},
+    encryption_provider::update_policy::{
+        TimeBasedUpdatePolicy, TrafficBasedUpdatePolicy, UpdatePolicy,
+    },
     pre_handshake::{psk::Psk, x25519::X25519Handshake},
 };
 
@@ -29,7 +31,7 @@ async fn handle_new_connection(
     server_tcp_socket: TcpStream,
     server_signer: HpqSignatureKeyPair,
     initial_payload: InitialPayload,
-    update_policy: UpdatePolicy,
+    update_policy: CombinedUpdatePolicy,
     connection: Arc<Mutex<Connection>>,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
     handshake_encryption: HandshakeEncryption,
@@ -99,7 +101,7 @@ async fn server_task(
     server_listener: TcpListener,
     server_signer: HpqSignatureKeyPair,
     initial_payload: InitialPayload,
-    update_policy: UpdatePolicy,
+    update_policy: CombinedUpdatePolicy,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
     handshake_encryption: HandshakeEncryption,
     expected_client_id: Uuid,
@@ -127,20 +129,28 @@ async fn server_task(
 
 async fn send_test_message(
     encryption_provider: &mut EncryptionProvider<EstablishedState, false>,
-    update_policy: &mut UpdatePolicy,
+    update_policy: &mut CombinedUpdatePolicy,
     message: &str,
     now: DateTime<Utc>,
 ) -> Vec<u8> {
     let update_was_due = update_policy.update_is_due(now);
-    let epoch_before = encryption_provider.epoch();
+    let epoch_before = if update_policy.pq_policy.is_some() {
+        encryption_provider.pq_epoch()
+    } else {
+        encryption_provider.t_epoch()
+    };
     encryption_provider
         .send_bytes(message.as_bytes().to_vec(), now)
         .await
         .unwrap();
     if update_was_due {
-        let epoch_after = encryption_provider.epoch();
+        let epoch_after = if update_policy.pq_policy.is_some() {
+            encryption_provider.pq_epoch()
+        } else {
+            encryption_provider.t_epoch()
+        };
         assert_eq!(epoch_before + 1, epoch_after);
-        update_policy.reset(now);
+        update_policy.reset_t(now);
     } else {
         // Can't say much about the else case, since the server might have
         // performed an update in the meantime.
@@ -155,7 +165,7 @@ async fn client_task(
     client_id: Uuid,
     server_verifying_key: Vec<u8>,
     initial_payload: InitialPayload,
-    mut update_policy: UpdatePolicy,
+    mut update_policy: CombinedUpdatePolicy,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
     handshake_encryption: HandshakeEncryption,
 ) {
@@ -260,20 +270,50 @@ async fn encryption_provider() {
 
     let now = Utc::now();
 
-    let server_signer = HpqSignatureKeyPair::new(DEFAULT_CIPHERSUITE.into());
-    let client_signer = HpqSignatureKeyPair::new(DEFAULT_CIPHERSUITE.into());
+    let mode = PqtMode::ConfOnly;
+
+    let server_signer = HpqSignatureKeyPair::new(mode.default_ciphersuite().into()).unwrap();
+    let client_signer = HpqSignatureKeyPair::new(mode.default_ciphersuite().into()).unwrap();
     let client_id = Uuid::new_v4();
 
     let initial_payload = InitialPayload(b"Initial payload".to_vec());
 
-    let policies: [(UpdatePolicy, UpdatePolicy); 2] = [
+    fn into_t(policy: impl Into<UpdatePolicy>) -> CombinedUpdatePolicy {
+        let policy = policy.into();
+        CombinedUpdatePolicy {
+            t_policy: policy,
+            pq_policy: None,
+        }
+    }
+
+    fn into_pq(policy: impl Into<UpdatePolicy>) -> CombinedUpdatePolicy {
+        let policy = policy.into();
+        CombinedUpdatePolicy {
+            t_policy: policy.clone(),
+            pq_policy: Some(policy),
+        }
+    }
+
+    let client_time_based_policy = TimeBasedUpdatePolicy::new(Duration::from_secs(5));
+    let server_time_based_policy = TimeBasedUpdatePolicy::new(Duration::from_secs(7));
+    let client_traffic_based_policy = TrafficBasedUpdatePolicy::new(80);
+    let server_traffic_based_policy = TrafficBasedUpdatePolicy::new(100);
+    let policies: [(CombinedUpdatePolicy, CombinedUpdatePolicy); 4] = [
         (
-            TimeBasedUpdatePolicy::new(Duration::from_secs(5)).into(),
-            TimeBasedUpdatePolicy::new(Duration::from_secs(7)).into(),
+            into_t(client_time_based_policy),
+            into_t(server_time_based_policy),
         ),
         (
-            TrafficBasedUpdatePolicy::new(80).into(),
-            TrafficBasedUpdatePolicy::new(100).into(),
+            into_pq(client_time_based_policy),
+            into_pq(server_time_based_policy),
+        ),
+        (
+            into_t(client_traffic_based_policy),
+            into_t(server_traffic_based_policy),
+        ),
+        (
+            into_pq(client_traffic_based_policy),
+            into_pq(server_traffic_based_policy),
         ),
     ];
 
@@ -310,8 +350,8 @@ async fn start_tasks(
     client_signer: HpqSignatureKeyPair,
     client_id: Uuid,
     initial_payload: InitialPayload,
-    server_policy: UpdatePolicy,
-    client_policy: UpdatePolicy,
+    server_policy: CombinedUpdatePolicy,
+    client_policy: CombinedUpdatePolicy,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
     handshake_encryption: HandshakeEncryption,
 ) {
@@ -353,7 +393,7 @@ async fn start_tasks(
 async fn spawn_client_encryption_provider(
     handshake_encryption: HandshakeEncryption,
     client_tcp_socket: TcpStream,
-    update_policy: UpdatePolicy,
+    update_policy: CombinedUpdatePolicy,
     connection: Arc<Mutex<Connection>>,
     client_signer: HpqSignatureKeyPair,
     client_id: Uuid,
@@ -363,7 +403,7 @@ async fn spawn_client_encryption_provider(
         HandshakeEncryption::Off => {
             EncryptionProvider::<UnprotectedHandshakeState, false>::new_from_stream(
                 client_tcp_socket,
-                update_policy.clone(),
+                update_policy,
             )
             .unwrap()
             .handshake(
@@ -377,7 +417,7 @@ async fn spawn_client_encryption_provider(
         HandshakeEncryption::Psk(psk) => {
             EncryptionProvider::<_, false>::new_with_pre_handshake(
                 client_tcp_socket,
-                update_policy.clone(),
+                update_policy,
                 psk,
             )
             .await
@@ -393,7 +433,7 @@ async fn spawn_client_encryption_provider(
         HandshakeEncryption::X25519(handshake) => {
             EncryptionProvider::<_, false>::new_with_pre_handshake(
                 client_tcp_socket,
-                update_policy.clone(),
+                update_policy,
                 handshake,
             )
             .await

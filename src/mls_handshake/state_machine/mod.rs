@@ -2,12 +2,16 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use hpqmls::key_package::KeyPackageNewError;
+#[cfg(test)]
 use hpqmls::HpqCiphersuite;
+#[cfg(test)]
+use openmls::prelude::Ciphersuite;
 use openmls::{
     group::{ExportSecretError, GroupId, MlsGroup, MlsGroupJoinConfig},
     prelude::{
         tls_codec::{self, Deserialize, Serialize},
-        Ciphersuite, KeyPackageNewError, MlsMessageBodyIn, OpenMlsCrypto, ProtocolMessage, Sender,
+        MlsMessageBodyIn, OpenMlsCrypto, ProtocolMessage, Sender,
     },
 };
 use openmls_sqlite_storage::Connection;
@@ -37,8 +41,11 @@ pub(super) mod tests;
 
 pub(super) use mls_group::MlsSession;
 
+#[cfg(test)]
 const T_CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_256_DHKEMP384_AES256GCM_SHA384_P384;
+#[cfg(test)]
 const PQ_CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87;
+#[cfg(test)]
 pub const CIPHERSUITE: HpqCiphersuite = HpqCiphersuite {
     t_ciphersuite: T_CIPHERSUITE,
     pq_ciphersuite: PQ_CIPHERSUITE,

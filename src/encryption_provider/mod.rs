@@ -25,10 +25,10 @@ use tokio::{
     sync::Mutex,
 };
 use tokio_util::codec::{FramedRead, FramedWrite};
-use update_policy::UpdatePolicy;
 use uuid::Uuid;
 
 use crate::{
+    encryption_provider::update_policy::CombinedUpdatePolicy,
     handshake::{ClientIdentity, CompletedHandshake, Handshake},
     mls_handshake::{HandshakeError, MlsHandshake, MlsHandshakeError},
     pre_handshake::{derive_traffic_secrets, PreHandshake},
@@ -39,6 +39,7 @@ use crate::{
     },
 };
 
+pub mod builder;
 pub mod update_policy;
 
 #[cfg(test)]
@@ -249,7 +250,7 @@ pub enum InnerPlaintext {
 pub struct EncryptionProvider<State, const IS_SERVER: bool> {
     state: State,
     address: String,
-    update_policy: UpdatePolicy,
+    update_policy: CombinedUpdatePolicy,
 }
 
 impl<State, const IS_SERVER: bool> EncryptionProvider<State, IS_SERVER> {
@@ -261,7 +262,7 @@ impl<State, const IS_SERVER: bool> EncryptionProvider<State, IS_SERVER> {
 impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SERVER> {
     pub fn new_from_stream(
         socket: TcpStream,
-        update_policy: UpdatePolicy,
+        update_policy: CombinedUpdatePolicy,
     ) -> Result<Self, EncryptionProviderError> {
         let address = socket.peer_addr()?.to_string();
         let (tcp_reader, tcp_writer) = TcpStream::into_split(socket);
@@ -277,7 +278,7 @@ impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SER
 
     pub async fn new_with_pre_handshake<Ph: PreHandshake>(
         socket: TcpStream,
-        update_policy: UpdatePolicy,
+        update_policy: CombinedUpdatePolicy,
         mut pre_handshake: Ph,
     ) -> Result<EncryptionProvider<ProtectedHandshakeState, IS_SERVER>, EncryptionProviderError>
     {
@@ -457,13 +458,23 @@ impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
         now: DateTime<Utc>,
     ) -> Result<(), EncryptionProviderError> {
         if self.update_policy.update_is_due(now) {
-            match self.state.handshake.update_handshake().await {
+            let pq_update_is_due = self.update_policy.pq_update_is_due(now);
+            match self
+                .state
+                .handshake
+                .update_handshake(pq_update_is_due)
+                .await
+            {
                 Ok((secret_update, message)) => {
                     self.send(InnerPlaintext::Signaling(message)).await?;
                     if let Some(secret_update) = secret_update {
                         self.update_cipher(secret_update)?;
                     }
-                    self.update_policy.reset(now);
+                    if pq_update_is_due {
+                        self.update_policy.reset_pq(now);
+                    } else {
+                        self.update_policy.reset_t(now);
+                    }
                 }
                 Err(MlsHandshakeError::HandshakeError(HandshakeError::WaitingForResponse)) => {
                     // If we're waiting for a response, we will try again with
@@ -584,7 +595,11 @@ impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
         Ok(())
     }
 
-    pub fn epoch(&self) -> u64 {
-        self.state.handshake.epoch()
+    pub fn t_epoch(&self) -> u64 {
+        self.state.handshake.t_epoch()
+    }
+
+    pub fn pq_epoch(&self) -> u64 {
+        self.state.handshake.pq_epoch()
     }
 }

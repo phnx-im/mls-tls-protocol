@@ -4,11 +4,13 @@
 
 use hpqmls::{
     authentication::{HpqCredentialWithKey, HpqSignatureKeyPair},
+    extension::{HpqMlsInfo, PqtMode, HPQMLS_EXTENSION_ID},
     messages::{HpqKeyPackageIn, HpqMlsMessageIn, HpqMlsMessageOut},
     HpqGroupId, HpqMlsGroup,
 };
-use openmls::prelude::BasicCredential;
+use openmls::prelude::{BasicCredential, SignatureScheme};
 use serde::{Deserialize, Serialize};
+use tls_codec::Deserialize as _;
 
 use crate::handshake::ClientIdentity;
 
@@ -17,12 +19,17 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(in crate::mls_handshake) struct MlsSession {
     pub(in crate::mls_handshake) group_id: HpqGroupId,
-    pub(in crate::mls_handshake) epoch: u64,
+    pub(in crate::mls_handshake) t_epoch: u64,
+    pub(in crate::mls_handshake) pq_epoch: u64,
 }
 
 impl MlsSession {
-    pub(super) fn new(group_id: HpqGroupId, epoch: u64) -> Self {
-        Self { group_id, epoch }
+    pub(super) fn new(group_id: HpqGroupId, t_epoch: u64, pq_epoch: u64) -> Self {
+        Self {
+            group_id,
+            t_epoch,
+            pq_epoch,
+        }
     }
 
     pub(super) fn create_server_session(
@@ -47,12 +54,21 @@ impl MlsSession {
         // verifying key.
         let credential_with_key = HpqCredentialWithKey::new(b"server", leaf_signer);
 
+        let mode = if matches!(
+            leaf_signer.pq_signer.signature_scheme(),
+            SignatureScheme::MLDSA87
+        ) {
+            PqtMode::ConfAndAuth
+        } else {
+            PqtMode::ConfOnly
+        };
+
         // Create a new group with the server as the only member
         let t_group_id = GroupId::from_slice(Uuid::new_v4().as_bytes());
         let pq_group_id = GroupId::from_slice(Uuid::new_v4().as_bytes());
         let mut server_group = HpqMlsGroup::builder()
             .with_group_ids(t_group_id, pq_group_id)
-            .ciphersuite(CIPHERSUITE)
+            .set_mode(mode)
             .use_ratchet_tree_extension(true)
             .build(&provider, leaf_signer, credential_with_key)
             .map_err(|e| HandshakeError::ClientHelloError(e.into()))?;
@@ -70,7 +86,8 @@ impl MlsSession {
 
         let mls_session = Self {
             group_id: server_group.group_id(),
-            epoch: server_group.t_group.epoch().as_u64(),
+            t_epoch: server_group.t_group.epoch().as_u64(),
+            pq_epoch: server_group.pq_group.epoch().as_u64(),
         };
 
         Ok((
@@ -85,6 +102,7 @@ impl MlsSession {
         &self,
         connection: &Connection,
         leaf_signer: &HpqSignatureKeyPair,
+        pq: bool,
     ) -> Result<HpqMlsMessageOut, HandshakeError> {
         let provider = Provider::from(connection);
 
@@ -92,13 +110,37 @@ impl MlsSession {
             .map_err(|e| HandshakeError::ProviderError(e.into()))?
             .ok_or(HandshakeError::InvalidSessionId)?;
 
-        let update = group
-            .commit_builder()
-            .force_self_update(true)
-            .finalize(&provider, leaf_signer, |_| true, |_| true)
-            .map_err(|e| HandshakeError::ResumptionError(e.into()))?;
+        let update = if pq {
+            group
+                .commit_builder()
+                .force_self_update(true)
+                .finalize(&provider, leaf_signer, |_| true, |_| true)
+                .map_err(|e| HandshakeError::ConnectionUpdateError(e.into()))?
+                .commit
+        } else {
+            let commit = group
+                .t_group
+                .commit_builder()
+                .force_self_update(true)
+                .load_psks(provider.storage())
+                .map_err(|e| HandshakeError::ConnectionUpdateError(e.into()))?
+                .build(
+                    provider.rand(),
+                    provider.crypto(),
+                    &leaf_signer.t_signer,
+                    |_| true,
+                )
+                .map_err(|e| HandshakeError::ConnectionUpdateError(e.into()))?
+                .stage_commit(&provider)
+                .map_err(|e| HandshakeError::ConnectionUpdateError(e.into()))?
+                .into_commit();
+            HpqMlsMessageOut {
+                t_message: commit,
+                pq_message: None,
+            }
+        };
 
-        Ok(update.commit)
+        Ok(update)
     }
 
     pub(super) fn merge_update(
@@ -114,7 +156,8 @@ impl MlsSession {
             .merge_pending_commit(&provider)
             .map_err(|e| HandshakeError::ConnectionUpdateError(e.into()))?;
 
-        self.epoch = group.t_group.epoch().as_u64();
+        self.t_epoch = group.t_group.epoch().as_u64();
+        self.pq_epoch = group.pq_group.epoch().as_u64();
 
         export_traffic_secrets(provider.crypto(), &group.t_group)
     }
@@ -125,13 +168,7 @@ impl MlsSession {
         drop_pending_commit: bool,
     ) -> Result<(TrafficSecrets, MlsSession, ClientIdentity), HandshakeError> {
         let original_message = mls_message.clone();
-        let (
-            MlsMessageBodyIn::PrivateMessage(private_t_message),
-            Some(MlsMessageBodyIn::PrivateMessage(private_pq_message)),
-        ) = (
-            mls_message.t_message.extract(),
-            mls_message.pq_message.map(|m| m.extract()),
-        )
+        let MlsMessageBodyIn::PrivateMessage(private_t_message) = mls_message.t_message.extract()
         else {
             return Err(HandshakeError::UnexpectedMessage {
                 expected: "PrivateMessage",
@@ -142,11 +179,21 @@ impl MlsSession {
         let provider = Provider::from(connection);
 
         let protocol_t_message = ProtocolMessage::PrivateMessage(private_t_message);
-        let protocol_pq_message = ProtocolMessage::PrivateMessage(private_pq_message);
 
+        let t_group = MlsGroup::load(provider.storage(), protocol_t_message.group_id())
+            .map_err(|e| HandshakeError::ProviderError(e.into()))?
+            .ok_or(HandshakeError::InvalidSessionId)?;
+
+        let hpq_extension = t_group
+            .extensions()
+            .unknown(HPQMLS_EXTENSION_ID)
+            .ok_or(HandshakeError::InvalidSessionId)?;
+        let hpq_info = HpqMlsInfo::tls_deserialize_exact(&hpq_extension.0)
+            .map_err(|_| HandshakeError::InvalidSessionId)?;
+        let pq_group_id = hpq_info.pq_session_group_id;
         let group_id = HpqGroupId {
             t_group_id: protocol_t_message.group_id().clone(),
-            pq_group_id: protocol_pq_message.group_id().clone(),
+            pq_group_id: pq_group_id.clone(),
         };
 
         let mut group = HpqMlsGroup::load(provider.storage(), &group_id)
@@ -167,11 +214,9 @@ impl MlsSession {
                 .map_err(|e| HandshakeError::ConnectionUpdateError(e.into()))?;
         }
 
-        println!("Processing message in HPQMLS");
         let processed_message = group
             .process_message(&provider, original_message)
             .map_err(|e| HandshakeError::ConnectionUpdateError(e.into()))?;
-        println!("Done processing message in HPQMLS");
 
         // Validation
 
@@ -210,14 +255,6 @@ impl MlsSession {
             ));
         }
 
-        // Commit can't contain any proposals
-        // TODO: This is de-activated while we're using proposals in HPQMLS
-        //if staged_commit.t_staged_commit.queued_proposals().count() > 0 {
-        //    return Err(HandshakeError::ValidationError(
-        //        "Resumption commit must not contain any proposals".to_string(),
-        //    ));
-        //}
-
         group
             .merge_staged_commit(&provider, staged_commit)
             .map_err(|e| HandshakeError::ConnectionUpdateError(e.into()))?;
@@ -226,7 +263,8 @@ impl MlsSession {
 
         let mls_session = Self {
             group_id: group.group_id().clone(),
-            epoch: group.t_group.epoch().as_u64(),
+            t_epoch: group.t_group.epoch().as_u64(),
+            pq_epoch: group.pq_group.epoch().as_u64(),
         };
 
         Ok((traffic_secrets, mls_session, client_identity))

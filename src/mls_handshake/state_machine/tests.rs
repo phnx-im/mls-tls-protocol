@@ -11,6 +11,12 @@ use openmls_sqlite_storage::Connection;
 
 #[test]
 fn handshake() {
+    for pq in [true, false] {
+        handshake_inner(pq);
+    }
+}
+
+fn handshake_inner(pq: bool) {
     let mut client_connection = Connection::open_in_memory().unwrap();
     ClientHandshakeState::create_table(&client_connection).unwrap();
     let mut server_connection = Connection::open_in_memory().unwrap();
@@ -25,7 +31,7 @@ fn handshake() {
     let test_profile_id = Uuid::new_v4();
 
     // Test initial handshake
-    let server_leaf_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into());
+    let server_leaf_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into()).unwrap();
 
     let (client_state, client_hello, client_leaf_signer) = ClientHandshake::start_from_seed(
         &mut client_connection,
@@ -51,7 +57,7 @@ fn handshake() {
     // update back, the traffic secrets will never be used, as the client will
     // immediately send an update itself after processing the server's update.
     let connection_update = server_state
-        .update(&mut server_connection, &server_leaf_signer, true)
+        .update(&mut server_connection, &server_leaf_signer, true, pq)
         .unwrap();
 
     let (client_traffic_secret, client_message_bytes) = client_state
@@ -103,7 +109,7 @@ fn handshake() {
 
     // Client updates and doesn't request an update back
     let (client_secret, connection_update) = client_state
-        .update(&mut client_connection, &client_leaf_signer, false)
+        .update(&mut client_connection, &client_leaf_signer, false, pq)
         .unwrap();
 
     let (server_traffic_secrets, server_message_bytes) = server_state
@@ -166,12 +172,12 @@ fn handshake() {
 
     // Client creates an update
     let (client_secret, connection_update) = client_state
-        .update(&mut client_connection, &client_leaf_signer, false)
+        .update(&mut client_connection, &client_leaf_signer, false, pq)
         .unwrap();
 
     // Server also creates an update
     let server_message_bytes = server_state
-        .update(&mut server_connection, &server_leaf_signer, false)
+        .update(&mut server_connection, &server_leaf_signer, false, pq)
         .unwrap();
 
     // Client processes server update
@@ -222,7 +228,7 @@ fn handshake() {
 
     // Now the client does an update, but the server doesn't receive it.
     let (client_secret, _connection_update) = client_state
-        .update(&mut client_connection, &client_leaf_signer, false)
+        .update(&mut client_connection, &client_leaf_signer, false, pq)
         .unwrap();
 
     // The server doesn't receive the client's update, but now the client wants to resume.
