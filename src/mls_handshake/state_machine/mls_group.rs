@@ -53,6 +53,7 @@ impl MlsSession {
             .map_err(|e| HandshakeError::ClientHelloError(e.into()))?;
 
         let mode = key_package.mode();
+        tracing::info!("KeyPackage mode: {:?}", mode);
         let leaf_signer = match mode {
             PqtMode::ConfOnly => t_leaf_signer,
             PqtMode::ConfAndAuth => pq_leaf_signer,
@@ -69,15 +70,6 @@ impl MlsSession {
         // Identity is irrelevant, as clients directly verify the server's
         // verifying key.
         let credential_with_key = HpqCredentialWithKey::new(b"server", leaf_signer);
-
-        let mode = if matches!(
-            leaf_signer.pq_signer.signature_scheme(),
-            SignatureScheme::MLDSA87
-        ) {
-            PqtMode::ConfAndAuth
-        } else {
-            PqtMode::ConfOnly
-        };
 
         // Create a new group with the server as the only member
         let t_group_id = GroupId::from_slice(Uuid::new_v4().as_bytes());
