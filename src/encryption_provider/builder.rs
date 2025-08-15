@@ -17,21 +17,14 @@ use crate::{
 
 #[derive(Debug, Default)]
 pub struct EncryptionProviderBuilder {
-    pqt_mode: PqtMode,
     update_policy: CombinedUpdatePolicy,
 }
 
 impl EncryptionProviderBuilder {
     pub fn new() -> Self {
         Self {
-            pqt_mode: PqtMode::default(),
             update_policy: CombinedUpdatePolicy::default(),
         }
-    }
-
-    pub fn with_pqt_mode(mut self, mode: PqtMode) -> Self {
-        self.pqt_mode = mode;
-        self
     }
 
     pub fn with_pq_update_policy(mut self, policy: UpdatePolicy) -> Self {
