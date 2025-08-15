@@ -90,7 +90,10 @@ impl WaitingForServerHello {
         // Join the group
         let provider = Provider::from(connection);
         let client_group = HpqMlsGroup::new_from_welcome(&provider, &join_config, welcome, None)
-            .map_err(|_| HandshakeError::ServerHelloError)?;
+            .map_err(|e| {
+                tracing::error!("Error joining group: {:?}", e);
+                HandshakeError::ServerHelloError
+            })?;
 
         if client_group
             .verifying_key_at(LeafNodeIndex::new(0))
