@@ -20,7 +20,7 @@ use std::{borrow::Borrow, mem, sync::Arc};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio_util::bytes::Bytes;
-use tracing::instrument;
+use tracing::{error, instrument};
 use uuid::Uuid;
 
 use crate::{
@@ -191,7 +191,10 @@ impl Handshake for MlsHandshake {
         };
 
         let server_verifying_key = HpqVerifyingKey::tls_deserialize_exact(server_verifying_key)
-            .map_err(|_| MlsHandshakeError::DecodingError)?;
+            .map_err(|e| {
+                error!(error = ?e, "Failed to decode server verifying key");
+                MlsHandshakeError::DecodingError
+            })?;
         let (handshake_state, client_hello) =
             ClientHandshake::start(&connection, &leaf_signer, server_verifying_key, client_id)?;
         tx.send(Bytes::from(client_hello))
@@ -199,9 +202,16 @@ impl Handshake for MlsHandshake {
             .map_err(|e| MlsHandshakeError::TransportError(e.into()))?;
 
         // Wait for the server to return a welcome message
-        let Some(Ok(server_hello_bytes)) = rx.next().await else {
-            tracing::error!("Invalid handshake ServerHello");
-            return Err(MlsHandshakeError::DecodingError);
+        let server_hello_bytes = match rx.next().await {
+            Some(Ok(server_hello_bytes)) => server_hello_bytes,
+            Some(Err(e)) => {
+                tracing::error!(error = ?e, "Invalid handshake ServerHello");
+                return Err(MlsHandshakeError::DecodingError);
+            }
+            None => {
+                tracing::error!("No ServerHello received");
+                return Err(MlsHandshakeError::DecodingError);
+            }
         };
 
         let (state, traffic_secrets) =
