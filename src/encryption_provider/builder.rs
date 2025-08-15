@@ -62,7 +62,7 @@ impl EncryptionProviderBuilder {
     }
 }
 
-impl<const IS_SERVER: bool> EncryptionProvider<UnprotectedHandshakeState, IS_SERVER> {
+impl<const IS_SERVER: bool, State> EncryptionProvider<State, IS_SERVER> {
     pub fn builder() -> EncryptionProviderBuilder {
         EncryptionProviderBuilder::default()
     }
