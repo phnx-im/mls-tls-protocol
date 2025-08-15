@@ -29,7 +29,8 @@ struct InitialPayload(Vec<u8>);
 
 async fn handle_new_connection(
     server_tcp_socket: TcpStream,
-    server_signer: HpqSignatureKeyPair,
+    server_t_signer: HpqSignatureKeyPair,
+    server_pq_signer: HpqSignatureKeyPair,
     initial_payload: InitialPayload,
     update_policy: CombinedUpdatePolicy,
     connection: Arc<Mutex<Connection>>,
@@ -45,7 +46,7 @@ async fn handle_new_connection(
                 update_policy,
             )
             .unwrap()
-            .handshake(connection, server_signer)
+            .handshake(connection, server_t_signer, server_pq_signer)
             .await
         }
         HandshakeEncryption::Psk(psk) => {
@@ -56,7 +57,7 @@ async fn handle_new_connection(
             )
             .await
             .unwrap()
-            .handshake(connection, server_signer)
+            .handshake(connection, server_t_signer, server_pq_signer)
             .await
         }
         HandshakeEncryption::X25519(handshake) => {
@@ -67,7 +68,7 @@ async fn handle_new_connection(
             )
             .await
             .unwrap()
-            .handshake(connection, server_signer)
+            .handshake(connection, server_t_signer, server_pq_signer)
             .await
         }
     }
@@ -99,7 +100,8 @@ async fn handle_new_connection(
 
 async fn server_task(
     server_listener: TcpListener,
-    server_signer: HpqSignatureKeyPair,
+    server_t_signer: HpqSignatureKeyPair,
+    server_pq_signer: HpqSignatureKeyPair,
     initial_payload: InitialPayload,
     update_policy: CombinedUpdatePolicy,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
@@ -115,7 +117,8 @@ async fn server_task(
         let (server_tcp_socket, _) = server_listener.accept().await.unwrap();
         final_connection = handle_new_connection(
             server_tcp_socket,
-            server_signer.clone(),
+            server_t_signer.clone(),
+            server_pq_signer.clone(),
             initial_payload.clone(),
             update_policy.clone(),
             connection.clone(),
@@ -268,85 +271,92 @@ async fn client_task(
 async fn encryption_provider() {
     tracing_subscriber::fmt::init();
 
-    let now = Utc::now();
+    let server_t_signer =
+        HpqSignatureKeyPair::new(PqtMode::ConfOnly.default_ciphersuite().into()).unwrap();
+    let server_pq_signer =
+        HpqSignatureKeyPair::new(PqtMode::ConfAndAuth.default_ciphersuite().into()).unwrap();
 
-    let mode = PqtMode::ConfOnly;
+    for mode in [PqtMode::ConfOnly, PqtMode::ConfAndAuth] {
+        let now = Utc::now();
 
-    let server_signer = HpqSignatureKeyPair::new(mode.default_ciphersuite().into()).unwrap();
-    let client_signer = HpqSignatureKeyPair::new(mode.default_ciphersuite().into()).unwrap();
-    let client_id = Uuid::new_v4();
+        let client_signer = HpqSignatureKeyPair::new(mode.default_ciphersuite().into()).unwrap();
+        let client_id = Uuid::new_v4();
 
-    let initial_payload = InitialPayload(b"Initial payload".to_vec());
+        let initial_payload = InitialPayload(b"Initial payload".to_vec());
 
-    fn into_t(policy: impl Into<UpdatePolicy>) -> CombinedUpdatePolicy {
-        let policy = policy.into();
-        CombinedUpdatePolicy {
-            t_policy: policy,
-            pq_policy: None,
+        fn into_t(policy: impl Into<UpdatePolicy>) -> CombinedUpdatePolicy {
+            let policy = policy.into();
+            CombinedUpdatePolicy {
+                t_policy: policy,
+                pq_policy: None,
+            }
         }
-    }
 
-    fn into_pq(policy: impl Into<UpdatePolicy>) -> CombinedUpdatePolicy {
-        let policy = policy.into();
-        CombinedUpdatePolicy {
-            t_policy: policy.clone(),
-            pq_policy: Some(policy),
+        fn into_pq(policy: impl Into<UpdatePolicy>) -> CombinedUpdatePolicy {
+            let policy = policy.into();
+            CombinedUpdatePolicy {
+                t_policy: policy.clone(),
+                pq_policy: Some(policy),
+            }
         }
-    }
 
-    let client_time_based_policy = TimeBasedUpdatePolicy::new(Duration::from_secs(5));
-    let server_time_based_policy = TimeBasedUpdatePolicy::new(Duration::from_secs(7));
-    let client_traffic_based_policy = TrafficBasedUpdatePolicy::new(80);
-    let server_traffic_based_policy = TrafficBasedUpdatePolicy::new(100);
-    let policies: [(CombinedUpdatePolicy, CombinedUpdatePolicy); 4] = [
-        (
-            into_t(client_time_based_policy),
-            into_t(server_time_based_policy),
-        ),
-        (
-            into_pq(client_time_based_policy),
-            into_pq(server_time_based_policy),
-        ),
-        (
-            into_t(client_traffic_based_policy),
-            into_t(server_traffic_based_policy),
-        ),
-        (
-            into_pq(client_traffic_based_policy),
-            into_pq(server_traffic_based_policy),
-        ),
-    ];
+        let client_time_based_policy = TimeBasedUpdatePolicy::new(Duration::from_secs(5));
+        let server_time_based_policy = TimeBasedUpdatePolicy::new(Duration::from_secs(7));
+        let client_traffic_based_policy = TrafficBasedUpdatePolicy::new(80);
+        let server_traffic_based_policy = TrafficBasedUpdatePolicy::new(100);
+        let policies: [(CombinedUpdatePolicy, CombinedUpdatePolicy); 4] = [
+            (
+                into_t(client_time_based_policy),
+                into_t(server_time_based_policy),
+            ),
+            (
+                into_pq(client_time_based_policy),
+                into_pq(server_time_based_policy),
+            ),
+            (
+                into_t(client_traffic_based_policy),
+                into_t(server_traffic_based_policy),
+            ),
+            (
+                into_pq(client_traffic_based_policy),
+                into_pq(server_traffic_based_policy),
+            ),
+        ];
 
-    let handshake_encryption_options = [
-        HandshakeEncryption::Off,
-        HandshakeEncryption::Psk(Psk::new(b"test_psk".to_vec())),
-        HandshakeEncryption::X25519(X25519Handshake),
-    ];
+        let handshake_encryption_options = [
+            HandshakeEncryption::Off,
+            HandshakeEncryption::Psk(Psk::new(b"test_psk".to_vec())),
+            HandshakeEncryption::X25519(X25519Handshake),
+        ];
 
-    for (client_policy, server_policy) in policies {
-        for handshake_encryption in handshake_encryption_options.clone() {
-            let global_test_time = Arc::new(Mutex::new(now));
+        for (client_policy, server_policy) in policies {
+            for handshake_encryption in handshake_encryption_options.clone() {
+                let global_test_time = Arc::new(Mutex::new(now));
 
-            let server_listener = TcpListener::bind("127.0.0.1:0").await.unwrap(); // Bind to any available port
-            start_tasks(
-                server_listener,
-                server_signer.clone(),
-                client_signer.clone(),
-                client_id,
-                initial_payload.clone(),
-                server_policy.clone(),
-                client_policy.clone(),
-                global_test_time,
-                handshake_encryption,
-            )
-            .await;
+                let server_listener = TcpListener::bind("127.0.0.1:0").await.unwrap(); // Bind to any available port
+                start_tasks(
+                    server_listener,
+                    server_t_signer.clone(),
+                    server_pq_signer.clone(),
+                    client_signer.clone(),
+                    client_id,
+                    initial_payload.clone(),
+                    server_policy.clone(),
+                    client_policy.clone(),
+                    global_test_time,
+                    handshake_encryption,
+                    mode,
+                )
+                .await;
+            }
         }
     }
 }
 
 async fn start_tasks(
     server_listener: TcpListener,
-    server_signer: HpqSignatureKeyPair,
+    server_t_signer: HpqSignatureKeyPair,
+    server_pq_signer: HpqSignatureKeyPair,
     client_signer: HpqSignatureKeyPair,
     client_id: Uuid,
     initial_payload: InitialPayload,
@@ -354,16 +364,18 @@ async fn start_tasks(
     client_policy: CombinedUpdatePolicy,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
     handshake_encryption: HandshakeEncryption,
+    mode: PqtMode,
 ) {
     let addr = server_listener.local_addr().unwrap();
-    let server_verifying_key = server_signer
-        .verifying_key()
-        .tls_serialize_detached()
-        .unwrap();
+    let server_verifying_key = match mode {
+        PqtMode::ConfOnly => server_t_signer.verifying_key().to_bytes(),
+        PqtMode::ConfAndAuth => server_pq_signer.verifying_key().to_bytes(),
+    };
     let server_task = tokio::spawn(
         server_task(
             server_listener,
-            server_signer,
+            server_t_signer,
+            server_pq_signer,
             initial_payload.clone(),
             server_policy.clone(),
             global_test_time.clone(),

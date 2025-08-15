@@ -3,7 +3,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use hpqmls::authentication::{HpqSignatureKeyPair, HpqVerifyingKey};
+use hpqmls::{
+    authentication::{HpqSignatureKeyPair, HpqVerifyingKey},
+    extension::PqtMode,
+};
 use openmls::prelude::tls_codec::Deserialize;
 use openmls_rust_crypto::RustCrypto;
 use openmls_sqlite_storage::{Codec, Connection, SqliteStorageProvider};
@@ -13,7 +16,7 @@ use state_machine::{
     initialize_storage,
     server::{ServerHandshake, ServerHandshakeState},
 };
-use std::{borrow::Borrow, sync::Arc};
+use std::{borrow::Borrow, mem, sync::Arc};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio_util::bytes::Bytes;
@@ -22,6 +25,7 @@ use uuid::Uuid;
 
 use crate::{
     handshake::{ClientIdentity, CompletedHandshake, Handshake},
+    mls_handshake::state_machine::server::ServerHandshakeResult,
     tls_aead::{codec::TlsPacketIn, SecretUpdate, TrafficSecrets},
 };
 
@@ -41,32 +45,60 @@ pub enum MlsHandshakeError {
     TransportError(Box<dyn std::error::Error + Send + Sync>),
     #[error(transparent)]
     HandshakeError(#[from] HandshakeError),
-    #[error("Perform a handshake before sending or receiving messages")]
-    Uninitialized,
     #[error(transparent)]
     Persistence(#[from] rusqlite::Error),
     #[error(transparent)]
     SqliteMigration(#[from] refinery::Error),
+    #[error("Invalid state")]
+    InvalidState,
 }
 
+#[derive(Default)]
 enum MlsHandshakeState {
+    #[default]
     None,
-    Client(Box<ClientHandshakeState>),
-    Server(ServerHandshakeState),
+    InitialClient(HpqSignatureKeyPair),
+    InitialServer {
+        t_leaf_signer: HpqSignatureKeyPair,
+        pq_leaf_signer: HpqSignatureKeyPair,
+    },
+    Client {
+        leaf_signer: HpqSignatureKeyPair,
+        state: Box<ClientHandshakeState>,
+    },
+    Server {
+        leaf_signer: HpqSignatureKeyPair,
+        state: ServerHandshakeState,
+    },
 }
 
 pub struct MlsHandshake {
-    leaf_signer: HpqSignatureKeyPair,
     connection: Arc<Mutex<Connection>>,
     state: MlsHandshakeState,
 }
 
 impl MlsHandshake {
-    pub fn new(connection: Arc<Mutex<Connection>>, leaf_signer: HpqSignatureKeyPair) -> Self {
+    pub fn new_client(
+        connection: Arc<Mutex<Connection>>,
+        leaf_signer: HpqSignatureKeyPair,
+    ) -> Self {
         Self {
-            leaf_signer,
             connection,
-            state: MlsHandshakeState::None,
+            state: MlsHandshakeState::InitialClient(leaf_signer),
+        }
+    }
+
+    pub fn new_server(
+        connection: Arc<Mutex<Connection>>,
+        t_leaf_signer: HpqSignatureKeyPair,
+        pq_leaf_signer: HpqSignatureKeyPair,
+    ) -> Self {
+        Self {
+            connection,
+            state: MlsHandshakeState::InitialServer {
+                t_leaf_signer,
+                pq_leaf_signer,
+            },
         }
     }
 }
@@ -94,13 +126,36 @@ impl Handshake for MlsHandshake {
             return Err(MlsHandshakeError::DecodingError);
         };
 
+        let initial_state = mem::replace(&mut self.state, MlsHandshakeState::None);
+
+        let MlsHandshakeState::InitialServer {
+            t_leaf_signer,
+            pq_leaf_signer,
+        } = initial_state
+        else {
+            return Err(MlsHandshakeError::InvalidState);
+        };
+
         let mut connection = self.connection.lock().await;
-        let (state, traffic_secrets, client_identity, response_bytes) = ServerHandshake::start(
+        let ServerHandshakeResult {
+            state,
+            traffic_secrets,
+            client_identity,
+            response_bytes,
+            mode,
+        } = ServerHandshake::start(
             &mut connection,
-            &self.leaf_signer,
+            &t_leaf_signer,
+            &pq_leaf_signer,
             &first_message_bytes.data,
         )?;
-        self.state = MlsHandshakeState::Server(state);
+
+        let leaf_signer = match mode {
+            PqtMode::ConfOnly => t_leaf_signer,
+            PqtMode::ConfAndAuth => pq_leaf_signer,
+        };
+
+        self.state = MlsHandshakeState::Server { leaf_signer, state };
 
         tx.send(Bytes::from(response_bytes))
             .await
@@ -129,14 +184,16 @@ impl Handshake for MlsHandshake {
         // TODO: Check here if we can load a `ClientHandshakeState` from the database
         // and resume the handshake.
 
+        let initial_state = mem::replace(&mut self.state, MlsHandshakeState::None);
+
+        let MlsHandshakeState::InitialClient(leaf_signer) = initial_state else {
+            return Err(MlsHandshakeError::InvalidState);
+        };
+
         let server_verifying_key = HpqVerifyingKey::tls_deserialize_exact(server_verifying_key)
             .map_err(|_| MlsHandshakeError::DecodingError)?;
-        let (handshake_state, client_hello) = ClientHandshake::start(
-            &connection,
-            &self.leaf_signer,
-            server_verifying_key,
-            client_id,
-        )?;
+        let (handshake_state, client_hello) =
+            ClientHandshake::start(&connection, &leaf_signer, server_verifying_key, client_id)?;
         tx.send(Bytes::from(client_hello))
             .await
             .map_err(|e| MlsHandshakeError::TransportError(e.into()))?;
@@ -152,7 +209,10 @@ impl Handshake for MlsHandshake {
 
         state.store(&connection)?;
 
-        self.state = MlsHandshakeState::Client(Box::new(state));
+        self.state = MlsHandshakeState::Client {
+            leaf_signer,
+            state: Box::new(state),
+        };
 
         Ok(traffic_secrets)
     }
@@ -163,17 +223,17 @@ impl CompletedHandshake for MlsHandshake {
 
     fn t_epoch(&self) -> u64 {
         match &self.state {
-            MlsHandshakeState::None => 0,
-            MlsHandshakeState::Client(client_handshake_state) => client_handshake_state.epoch(),
-            MlsHandshakeState::Server(server_handshake_state) => server_handshake_state.epoch(),
+            MlsHandshakeState::Client { state, .. } => state.t_epoch(),
+            MlsHandshakeState::Server { state, .. } => state.t_epoch(),
+            _ => 0,
         }
     }
 
     fn pq_epoch(&self) -> u64 {
         match &self.state {
-            MlsHandshakeState::None => 0,
-            MlsHandshakeState::Client(client_handshake_state) => client_handshake_state.epoch(),
-            MlsHandshakeState::Server(server_handshake_state) => server_handshake_state.epoch(),
+            MlsHandshakeState::Client { state, .. } => state.pq_epoch(),
+            MlsHandshakeState::Server { state, .. } => state.pq_epoch(),
+            _ => 0,
         }
     }
 
@@ -183,20 +243,19 @@ impl CompletedHandshake for MlsHandshake {
     ) -> Result<(Option<SecretUpdate>, Vec<u8>), Self::Error> {
         let mut connection = self.connection.lock().await;
         match &mut self.state {
-            MlsHandshakeState::None => Err(MlsHandshakeError::Uninitialized),
-            MlsHandshakeState::Client(client_handshake_state) => {
+            MlsHandshakeState::Client { leaf_signer, state } => {
                 let (client_secret, message_bytes) =
-                    client_handshake_state.update(&mut connection, &self.leaf_signer, false, pq)?;
+                    state.update(&mut connection, &leaf_signer, false, pq)?;
                 Ok((
                     Some(SecretUpdate::ClientSecret(client_secret)),
                     message_bytes,
                 ))
             }
-            MlsHandshakeState::Server(server_handshake_state) => {
-                let message_bytes =
-                    server_handshake_state.update(&mut connection, &self.leaf_signer, false, pq)?;
+            MlsHandshakeState::Server { leaf_signer, state } => {
+                let message_bytes = state.update(&mut connection, &leaf_signer, false, pq)?;
                 Ok((None, message_bytes))
             }
+            _ => Err(MlsHandshakeError::InvalidState),
         }
     }
 
@@ -206,30 +265,33 @@ impl CompletedHandshake for MlsHandshake {
     ) -> Result<(Option<SecretUpdate>, Option<Vec<u8>>), Self::Error> {
         let mut connection = self.connection.lock().await;
         match &mut self.state {
-            MlsHandshakeState::None => Err(MlsHandshakeError::Uninitialized),
-            MlsHandshakeState::Client(client_handshake_state) => {
-                let (secret_update, message_bytes) = client_handshake_state
-                    .receive_signaling_message(&mut connection, &self.leaf_signer, message_bytes)?;
+            MlsHandshakeState::Client { leaf_signer, state } => {
+                let (secret_update, message_bytes) =
+                    state.receive_signaling_message(&mut connection, leaf_signer, message_bytes)?;
                 Ok((secret_update, message_bytes))
             }
-            MlsHandshakeState::Server(server_handshake_state) => {
-                let (traffic_secrets, message_bytes) = server_handshake_state
-                    .receive_signaling_message(&mut connection, &self.leaf_signer, message_bytes)?;
+            MlsHandshakeState::Server { leaf_signer, state } => {
+                let (traffic_secrets, message_bytes) = state.receive_signaling_message(
+                    &mut connection,
+                    &leaf_signer,
+                    message_bytes,
+                )?;
                 Ok((Some(SecretUpdate::Both(traffic_secrets)), message_bytes))
             }
+            _ => Err(MlsHandshakeError::InvalidState),
         }
     }
 
     async fn delete(&mut self) -> Result<(), Self::Error> {
         let mut connection = self.connection.lock().await;
         match &self.state {
-            MlsHandshakeState::None => (),
-            MlsHandshakeState::Client(client_handshake_state) => {
-                ClientHandshakeState::delete(&mut connection, client_handshake_state.profile_id)?;
+            MlsHandshakeState::Client { state, .. } => {
+                ClientHandshakeState::delete(&mut connection, state.profile_id)?;
             }
-            MlsHandshakeState::Server(server_handshake_state) => {
-                server_handshake_state.mls_session.delete(&connection)?;
+            MlsHandshakeState::Server { state, .. } => {
+                state.mls_session.delete(&connection)?;
             }
+            _ => (),
         }
         Ok(())
     }
@@ -237,110 +299,125 @@ impl CompletedHandshake for MlsHandshake {
 
 #[cfg(test)]
 mod tests {
-    use crate::{mls_handshake::state_machine::CIPHERSUITE, tls_aead::codec::TlsFrameCodec};
+    use crate::{
+        mls_handshake::state_machine::{PQ_AUTH_CIPHERSUITE, T_AUTH_CIPHERSUITE},
+        tls_aead::codec::TlsFrameCodec,
+    };
 
     use super::*;
     use futures::TryStreamExt;
     use hpqmls::authentication::HpqSigner;
-    use openmls::prelude::tls_codec::Serialize;
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use tokio_util::codec::{FramedRead, FramedWrite};
 
     #[tokio::test]
     async fn mls_handshake() {
-        let (client_rx, server_tx) = tokio::io::duplex(1024);
-        let (server_rx, client_tx) = tokio::io::duplex(1024);
+        let server_t_signer = HpqSignatureKeyPair::new(T_AUTH_CIPHERSUITE.into()).unwrap();
+        let server_pq_signer = HpqSignatureKeyPair::new(PQ_AUTH_CIPHERSUITE.into()).unwrap();
 
-        let mut client_framed_tx = FramedWrite::new(client_tx, TlsFrameCodec)
-            .sink_map_err(|e| MlsHandshakeError::TransportError(e.into()));
-        let mut server_framed_rx =
-            FramedRead::new(server_rx, TlsFrameCodec).map_err(|_| MlsHandshakeError::DecodingError);
-        let mut client_framed_rx =
-            FramedRead::new(client_rx, TlsFrameCodec).map_err(|_| MlsHandshakeError::DecodingError);
-        let mut server_framed_tx = FramedWrite::new(server_tx, TlsFrameCodec)
-            .sink_map_err(|e| MlsHandshakeError::TransportError(e.into()));
+        for mode in [PqtMode::ConfOnly, PqtMode::ConfAndAuth] {
+            let (client_rx, server_tx) = tokio::io::duplex(1024);
+            let (server_rx, client_tx) = tokio::io::duplex(1024);
 
-        let mut client_connection = Connection::open_in_memory().unwrap();
-        initialize_storage(&mut client_connection).unwrap();
-        let mut server_connection = Connection::open_in_memory().unwrap();
-        initialize_storage(&mut server_connection).unwrap();
+            let mut client_framed_tx = FramedWrite::new(client_tx, TlsFrameCodec)
+                .sink_map_err(|e| MlsHandshakeError::TransportError(e.into()));
+            let mut server_framed_rx = FramedRead::new(server_rx, TlsFrameCodec)
+                .map_err(|_| MlsHandshakeError::DecodingError);
+            let mut client_framed_rx = FramedRead::new(client_rx, TlsFrameCodec)
+                .map_err(|_| MlsHandshakeError::DecodingError);
+            let mut server_framed_tx = FramedWrite::new(server_tx, TlsFrameCodec)
+                .sink_map_err(|e| MlsHandshakeError::TransportError(e.into()));
 
-        let client_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into()).unwrap();
-        let server_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into()).unwrap();
+            let mut client_connection = Connection::open_in_memory().unwrap();
+            initialize_storage(&mut client_connection).unwrap();
+            let mut server_connection = Connection::open_in_memory().unwrap();
+            initialize_storage(&mut server_connection).unwrap();
 
-        let client_connection = Arc::new(Mutex::new(client_connection));
-        let server_connection = Arc::new(Mutex::new(server_connection));
-        let mut client_handshake = MlsHandshake::new(client_connection, client_signer);
-        let mut server_handshake = MlsHandshake::new(server_connection, server_signer);
-        let client_km = Arc::new(Mutex::new(TrafficSecrets::default()));
-        let server_km = Arc::new(Mutex::new(TrafficSecrets::default()));
+            let signature_scheme = match mode {
+                PqtMode::ConfOnly => T_AUTH_CIPHERSUITE.into(),
+                PqtMode::ConfAndAuth => PQ_AUTH_CIPHERSUITE.into(),
+            };
+            let client_signer = HpqSignatureKeyPair::new(signature_scheme).unwrap();
 
-        let server_verifying_key = server_handshake
-            .leaf_signer
-            .verifying_key()
-            .tls_serialize_detached()
-            .unwrap();
-        let ckm = client_km.clone();
-        let client_id = Uuid::new_v4();
-        let client_task = tokio::spawn(async move {
-            let mut tf = ckm.lock().await;
-            *tf = client_handshake
-                .client_handshake(
-                    &mut client_framed_rx,
-                    &mut client_framed_tx,
-                    client_id,
-                    &server_verifying_key,
-                )
-                .await
-                .unwrap();
-            let (secret_update, message) = client_handshake.update_handshake(false).await.unwrap();
-            if let Some(secret_update) = secret_update {
-                tf.update(secret_update);
-            }
-            client_framed_tx.send(Bytes::from(message)).await.unwrap();
-            let response = client_framed_rx.next().await.unwrap().unwrap();
-            let (secret_update, message) = client_handshake
-                .process_signaling_message(&response.data)
-                .await
-                .unwrap();
-            if let Some(secret_update) = secret_update {
-                tf.update(secret_update);
-            }
-            assert!(message.is_none());
-        });
+            let server_verifying_key = match mode {
+                PqtMode::ConfOnly => server_t_signer.verifying_key().to_bytes(),
+                PqtMode::ConfAndAuth => server_pq_signer.verifying_key().to_bytes(),
+            };
 
-        let skm = server_km.clone();
-        let server_task = tokio::spawn(async move {
-            let mut tf = skm.lock().await;
-            let client_identity;
-            (*tf, client_identity) = server_handshake
-                .server_handshake(&mut server_framed_rx, &mut server_framed_tx)
-                .await
-                .unwrap();
-            assert_eq!(client_identity.0, client_id.as_bytes());
-            let message_bytes = server_framed_rx.next().await.unwrap().unwrap();
-            let (secret_update, message) = server_handshake
-                .process_signaling_message(&message_bytes.data)
-                .await
-                .unwrap();
-            if let Some(secret_update) = secret_update {
-                tf.update(secret_update);
-            }
-            server_framed_tx
-                .send(Bytes::from(message.unwrap()))
-                .await
-                .unwrap();
-        });
+            let client_connection = Arc::new(Mutex::new(client_connection));
+            let server_connection = Arc::new(Mutex::new(server_connection));
+            let mut client_handshake = MlsHandshake::new_client(client_connection, client_signer);
+            let mut server_handshake = MlsHandshake::new_server(
+                server_connection,
+                server_t_signer.clone(),
+                server_pq_signer.clone(),
+            );
+            let client_km = Arc::new(Mutex::new(TrafficSecrets::default()));
+            let server_km = Arc::new(Mutex::new(TrafficSecrets::default()));
 
-        tokio::try_join!(client_task, server_task).unwrap();
-        assert_eq!(
-            client_km.lock().await.client_secret,
-            server_km.lock().await.client_secret
-        );
-        assert_eq!(
-            client_km.lock().await.server_secret,
-            server_km.lock().await.server_secret
-        );
+            let ckm = client_km.clone();
+            let client_id = Uuid::new_v4();
+            let client_task = tokio::spawn(async move {
+                let mut tf = ckm.lock().await;
+                *tf = client_handshake
+                    .client_handshake(
+                        &mut client_framed_rx,
+                        &mut client_framed_tx,
+                        client_id,
+                        &server_verifying_key,
+                    )
+                    .await
+                    .unwrap();
+                let (secret_update, message) =
+                    client_handshake.update_handshake(false).await.unwrap();
+                if let Some(secret_update) = secret_update {
+                    tf.update(secret_update);
+                }
+                client_framed_tx.send(Bytes::from(message)).await.unwrap();
+                let response = client_framed_rx.next().await.unwrap().unwrap();
+                let (secret_update, message) = client_handshake
+                    .process_signaling_message(&response.data)
+                    .await
+                    .unwrap();
+                if let Some(secret_update) = secret_update {
+                    tf.update(secret_update);
+                }
+                assert!(message.is_none());
+            });
+
+            let skm = server_km.clone();
+            let server_task = tokio::spawn(async move {
+                let mut tf = skm.lock().await;
+                let client_identity;
+                (*tf, client_identity) = server_handshake
+                    .server_handshake(&mut server_framed_rx, &mut server_framed_tx)
+                    .await
+                    .unwrap();
+                assert_eq!(client_identity.0, client_id.as_bytes());
+                let message_bytes = server_framed_rx.next().await.unwrap().unwrap();
+                let (secret_update, message) = server_handshake
+                    .process_signaling_message(&message_bytes.data)
+                    .await
+                    .unwrap();
+                if let Some(secret_update) = secret_update {
+                    tf.update(secret_update);
+                }
+                server_framed_tx
+                    .send(Bytes::from(message.unwrap()))
+                    .await
+                    .unwrap();
+            });
+
+            tokio::try_join!(client_task, server_task).unwrap();
+            assert_eq!(
+                client_km.lock().await.client_secret,
+                server_km.lock().await.client_secret
+            );
+            assert_eq!(
+                client_km.lock().await.server_secret,
+                server_km.lock().await.server_secret
+            );
+        }
     }
 }

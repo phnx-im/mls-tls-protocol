@@ -42,13 +42,14 @@ pub(super) mod tests;
 pub(super) use mls_group::MlsSession;
 
 #[cfg(test)]
-const T_CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_256_DHKEMP384_AES256GCM_SHA384_P384;
+pub const PQ_AUTH_CIPHERSUITE: HpqCiphersuite = HpqCiphersuite {
+    t_ciphersuite: Ciphersuite::MLS_256_DHKEMP384_AES256GCM_SHA384_P384,
+    pq_ciphersuite: Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87,
+};
 #[cfg(test)]
-const PQ_CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87;
-#[cfg(test)]
-pub const CIPHERSUITE: HpqCiphersuite = HpqCiphersuite {
-    t_ciphersuite: T_CIPHERSUITE,
-    pq_ciphersuite: PQ_CIPHERSUITE,
+pub const T_AUTH_CIPHERSUITE: HpqCiphersuite = HpqCiphersuite {
+    t_ciphersuite: Ciphersuite::MLS_256_DHKEMP384_AES256GCM_SHA384_P384,
+    pq_ciphersuite: Ciphersuite::MLS_192_MLKEM1024_AES256GCM_SHA384_P384,
 };
 const SHARED_EXPORT_LABEL: &str = "MLS-TLS 1.0";
 const CLIENT_TRAFFIC_SECRET_LABEL: &str = "Initial Client Traffic Secret";

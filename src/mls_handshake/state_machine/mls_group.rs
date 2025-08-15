@@ -34,13 +34,29 @@ impl MlsSession {
 
     pub(super) fn create_server_session(
         connection: &Connection,
-        leaf_signer: &HpqSignatureKeyPair,
+        t_leaf_signer: &HpqSignatureKeyPair,
+        pq_leaf_signer: &HpqSignatureKeyPair,
         key_package_in: HpqKeyPackageIn,
-    ) -> Result<(Self, TrafficSecrets, ClientIdentity, HpqMlsMessageOut), HandshakeError> {
+    ) -> Result<
+        (
+            Self,
+            TrafficSecrets,
+            ClientIdentity,
+            HpqMlsMessageOut,
+            PqtMode,
+        ),
+        HandshakeError,
+    > {
         let provider = Provider::from(connection);
         let key_package = key_package_in
             .validate(provider.crypto())
             .map_err(|e| HandshakeError::ClientHelloError(e.into()))?;
+
+        let mode = key_package.mode();
+        let leaf_signer = match mode {
+            PqtMode::ConfOnly => t_leaf_signer,
+            PqtMode::ConfAndAuth => pq_leaf_signer,
+        };
 
         // Get the client's identity
         let t_client_basic_credential =
@@ -95,6 +111,7 @@ impl MlsSession {
             traffic_secrets,
             client_identity,
             bundle.into_welcome().unwrap().into(),
+            mode,
         ))
     }
 
@@ -166,7 +183,7 @@ impl MlsSession {
         connection: &Connection,
         mls_message: HpqMlsMessageIn,
         drop_pending_commit: bool,
-    ) -> Result<(TrafficSecrets, MlsSession, ClientIdentity), HandshakeError> {
+    ) -> Result<(TrafficSecrets, MlsSession, ClientIdentity, PqtMode), HandshakeError> {
         let original_message = mls_message.clone();
         let MlsMessageBodyIn::PrivateMessage(private_t_message) = mls_message.t_message.extract()
         else {
@@ -267,7 +284,7 @@ impl MlsSession {
             pq_epoch: group.pq_group.epoch().as_u64(),
         };
 
-        Ok((traffic_secrets, mls_session, client_identity))
+        Ok((traffic_secrets, mls_session, client_identity, hpq_info.mode))
     }
 
     pub(super) fn process_epoch_key_update(

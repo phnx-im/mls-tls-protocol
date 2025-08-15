@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use hpqmls::authentication::HpqSignatureKeyPair;
+use hpqmls::{authentication::HpqSignatureKeyPair, extension::PqtMode};
 
 use crate::{
     handshake::ClientIdentity,
@@ -13,25 +13,26 @@ use super::*;
 
 pub(in crate::mls_handshake) struct ServerHandshake;
 
+pub(in crate::mls_handshake) struct ServerHandshakeResult {
+    pub(in crate::mls_handshake) state: ServerHandshakeState,
+    pub(in crate::mls_handshake) traffic_secrets: TrafficSecrets,
+    pub(in crate::mls_handshake) client_identity: ClientIdentity,
+    pub(in crate::mls_handshake) response_bytes: Vec<u8>,
+    pub(in crate::mls_handshake) mode: PqtMode,
+}
+
 impl ServerHandshake {
     pub(in crate::mls_handshake) fn start(
         connection: &mut Connection,
-        leaf_signer: &HpqSignatureKeyPair,
+        t_leaf_signer: &HpqSignatureKeyPair,
+        pq_leaf_signer: &HpqSignatureKeyPair,
         message_bytes: &[u8],
-    ) -> Result<
-        (
-            ServerHandshakeState,
-            TrafficSecrets,
-            ClientIdentity,
-            Vec<u8>,
-        ),
-        HandshakeError,
-    > {
+    ) -> Result<ServerHandshakeResult, HandshakeError> {
         let message = MlsTlsHandshakeIn::tls_deserialize_exact(message_bytes)?;
         message.check_version()?;
         match message.payload {
             HandshakePayloadIn::ClientHello(client_hello) => {
-                Self::process_client_hello(connection, leaf_signer, client_hello)
+                Self::process_client_hello(connection, t_leaf_signer, pq_leaf_signer, client_hello)
             }
             HandshakePayloadIn::Resumption(resumption) => {
                 Self::process_resumption(connection, resumption)
@@ -41,17 +42,10 @@ impl ServerHandshake {
 
     fn process_client_hello(
         connection: &mut Connection,
-        leaf_signer: &HpqSignatureKeyPair,
+        t_leaf_signer: &HpqSignatureKeyPair,
+        pq_leaf_signer: &HpqSignatureKeyPair,
         client_hello: ClientHelloIn,
-    ) -> Result<
-        (
-            ServerHandshakeState,
-            TrafficSecrets,
-            ClientIdentity,
-            Vec<u8>,
-        ),
-        HandshakeError,
-    > {
+    ) -> Result<ServerHandshakeResult, HandshakeError> {
         let Some(key_package_in) = client_hello.key_package.into_key_package() else {
             return Err(HandshakeError::UnexpectedMessage {
                 expected: "KeyPackage",
@@ -59,8 +53,13 @@ impl ServerHandshake {
             });
         };
 
-        let (mls_session, traffic_secrets, client_identity, welcome) =
-            MlsSession::create_server_session(connection, leaf_signer, key_package_in)?;
+        let (mls_session, traffic_secrets, client_identity, welcome, mode) =
+            MlsSession::create_server_session(
+                connection,
+                t_leaf_signer,
+                pq_leaf_signer,
+                key_package_in,
+            )?;
 
         let message = ServerHelloOut { welcome };
 
@@ -71,22 +70,22 @@ impl ServerHandshake {
             internal_state: ServerInternalState::Running,
         };
 
-        Ok((state, traffic_secrets, client_identity, message_bytes))
+        let result = ServerHandshakeResult {
+            state,
+            traffic_secrets,
+            client_identity,
+            response_bytes: message_bytes,
+            mode,
+        };
+
+        Ok(result)
     }
 
     pub(in crate::mls_handshake) fn process_resumption(
         connection: &Connection,
         resumption: ResumptionIn,
-    ) -> Result<
-        (
-            ServerHandshakeState,
-            TrafficSecrets,
-            ClientIdentity,
-            Vec<u8>,
-        ),
-        HandshakeError,
-    > {
-        let (traffic_secrets, session_id, client_identity) =
+    ) -> Result<ServerHandshakeResult, HandshakeError> {
+        let (traffic_secrets, session_id, client_identity, mode) =
             MlsSession::process_mls_update(connection, resumption.commit, true)?;
 
         let state = ServerHandshakeState {
@@ -96,12 +95,15 @@ impl ServerHandshake {
 
         let connection_confirmation = state.create_connection_confirmation(connection)?;
 
-        Ok((
+        let result = ServerHandshakeResult {
             state,
             traffic_secrets,
             client_identity,
-            connection_confirmation,
-        ))
+            response_bytes: connection_confirmation,
+            mode,
+        };
+
+        Ok(result)
     }
 }
 
@@ -124,8 +126,12 @@ impl HandshakeState for ServerHandshakeState {
 }
 
 impl ServerHandshakeState {
-    pub(in crate::mls_handshake) fn epoch(&self) -> u64 {
+    pub(in crate::mls_handshake) fn t_epoch(&self) -> u64 {
         self.mls_session.t_epoch
+    }
+
+    pub(in crate::mls_handshake) fn pq_epoch(&self) -> u64 {
+        self.mls_session.pq_epoch
     }
 
     fn is_waiting_for_response(&self) -> bool {
@@ -204,7 +210,7 @@ impl ServerHandshakeState {
         connection_update: ConnectionUpdateIn,
     ) -> Result<(TrafficSecrets, Vec<u8>), HandshakeError> {
         println!("Processing connection update");
-        let (traffic_secrets, mls_session, _client_identity) =
+        let (traffic_secrets, mls_session, _client_identity, _mode) =
             MlsSession::process_mls_update(connection, connection_update.mls_commit, true)?;
         println!("Done processing MLS update");
 

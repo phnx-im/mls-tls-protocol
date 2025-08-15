@@ -2,21 +2,28 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::mls_handshake::{ClientHandshake, ClientHandshakeState, SecretUpdate, ServerHandshake};
+use crate::mls_handshake::{
+    ClientHandshake, ClientHandshakeState, SecretUpdate, ServerHandshake, ServerHandshakeResult,
+};
 
 use super::*;
 
-use hpqmls::authentication::{HpqSignatureKeyPair, HpqSigner};
+use hpqmls::{
+    authentication::{HpqSignatureKeyPair, HpqSigner},
+    extension::PqtMode,
+};
 use openmls_sqlite_storage::Connection;
 
 #[test]
 fn handshake() {
     for pq in [true, false] {
-        handshake_inner(pq);
+        for mode in [PqtMode::ConfOnly, PqtMode::ConfAndAuth] {
+            handshake_inner(pq, mode);
+        }
     }
 }
 
-fn handshake_inner(pq: bool) {
+fn handshake_inner(pq: bool, mode: PqtMode) {
     let mut client_connection = Connection::open_in_memory().unwrap();
     ClientHandshakeState::create_table(&client_connection).unwrap();
     let mut server_connection = Connection::open_in_memory().unwrap();
@@ -31,17 +38,45 @@ fn handshake_inner(pq: bool) {
     let test_profile_id = Uuid::new_v4();
 
     // Test initial handshake
-    let server_leaf_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into()).unwrap();
+    //let server_t_leaf_signer = HpqSignatureKeyPair::new(T_CIPHERSUITE.into()).unwrap();
+    let server_pq_leaf_signer = HpqSignatureKeyPair::new(PQ_AUTH_CIPHERSUITE.into()).unwrap();
+    let server_t_leaf_signer = HpqSignatureKeyPair::new(T_AUTH_CIPHERSUITE.into()).unwrap();
 
-    let (client_state, client_hello, client_leaf_signer) = ClientHandshake::start_from_seed(
+    let server_verifying_key = match mode {
+        PqtMode::ConfOnly => server_t_leaf_signer.verifying_key(),
+        PqtMode::ConfAndAuth => server_pq_leaf_signer.verifying_key(),
+    };
+
+    let client_leaf_signer = HpqSignatureKeyPair::new(mode.default_ciphersuite().into()).unwrap();
+
+    let (client_state, client_hello) = ClientHandshake::start(
         &mut client_connection,
-        server_leaf_signer.verifying_key(),
+        &client_leaf_signer,
+        server_verifying_key,
         test_profile_id,
     )
     .unwrap();
 
-    let (mut server_state, server_traffic_secrets, client_identity, server_hello) =
-        ServerHandshake::start(&mut server_connection, &server_leaf_signer, &client_hello).unwrap();
+    let ServerHandshakeResult {
+        state: mut server_state,
+        traffic_secrets: server_traffic_secrets,
+        client_identity,
+        response_bytes: server_hello,
+        mode: server_mode,
+    } = ServerHandshake::start(
+        &mut server_connection,
+        &server_t_leaf_signer,
+        &server_pq_leaf_signer,
+        &client_hello,
+    )
+    .unwrap();
+
+    assert_eq!(server_mode, mode);
+
+    let server_leaf_signer = match mode {
+        PqtMode::ConfOnly => &server_t_leaf_signer,
+        PqtMode::ConfAndAuth => &server_pq_leaf_signer,
+    };
 
     assert_eq!(client_identity.0, test_profile_id.as_bytes());
 
@@ -149,8 +184,19 @@ fn handshake_inner(pq: bool) {
         .resume(&mut client_connection, &client_leaf_signer)
         .unwrap();
 
-    let (mut server_state, server_traffic_secrets, client_identity, connection_confirmation) =
-        ServerHandshake::start(&mut server_connection, &server_leaf_signer, &resumption).unwrap();
+    let ServerHandshakeResult {
+        state: mut server_state,
+        traffic_secrets: server_traffic_secrets,
+        client_identity,
+        response_bytes: connection_confirmation,
+        ..
+    } = ServerHandshake::start(
+        &mut server_connection,
+        &server_t_leaf_signer,
+        &server_pq_leaf_signer,
+        &resumption,
+    )
+    .unwrap();
 
     assert_eq!(client_identity.0, test_profile_id.as_bytes());
 
@@ -240,8 +286,18 @@ fn handshake_inner(pq: bool) {
     assert_eq!(client_secret, client_traffic_secrets.client_secret);
 
     // The server receives the resumption
-    let (mut _server_state, server_traffic_secrets, client_identity, connection_confirmation) =
-        ServerHandshake::start(&mut server_connection, &server_leaf_signer, &resumption).unwrap();
+    let ServerHandshakeResult {
+        traffic_secrets: server_traffic_secrets,
+        client_identity,
+        response_bytes: connection_confirmation,
+        ..
+    } = ServerHandshake::start(
+        &mut server_connection,
+        &server_t_leaf_signer,
+        &server_pq_leaf_signer,
+        &resumption,
+    )
+    .unwrap();
 
     assert_eq!(client_identity.0, test_profile_id.as_bytes());
 

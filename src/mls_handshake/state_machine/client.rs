@@ -25,20 +25,6 @@ use super::{mls_group::MlsSession, *};
 pub(in crate::mls_handshake) struct ClientHandshake {}
 
 impl ClientHandshake {
-    #[cfg(test)]
-    pub(in crate::mls_handshake) fn start_from_seed(
-        connection: &mut Connection,
-        server_verifying_key: HpqVerifyingKey,
-        client_id: Uuid,
-    ) -> Result<(WaitingForServerHello, Vec<u8>, HpqSignatureKeyPair), HandshakeError> {
-        let leaf_signer = HpqSignatureKeyPair::new(CIPHERSUITE.into()).unwrap();
-
-        let (waiting_for_server_hello, client_hello_bytes) =
-            Self::start(connection, &leaf_signer, server_verifying_key, client_id)?;
-
-        Ok((waiting_for_server_hello, client_hello_bytes, leaf_signer))
-    }
-
     pub(in crate::mls_handshake) fn start(
         connection: &Connection,
         own_signature_keypair: &HpqSignatureKeyPair,
@@ -161,8 +147,12 @@ pub(crate) struct ClientHandshakeState {
 }
 
 impl ClientHandshakeState {
-    pub fn epoch(&self) -> u64 {
+    pub fn t_epoch(&self) -> u64 {
         self.mls_session.t_epoch
+    }
+
+    pub fn pq_epoch(&self) -> u64 {
+        self.mls_session.pq_epoch
     }
 
     #[allow(dead_code)]
@@ -335,7 +325,7 @@ impl ClientHandshakeState {
         leaf_signer: &HpqSignatureKeyPair,
         connection_update: ConnectionUpdateIn,
     ) -> Result<(ClientSecret, Vec<u8>), HandshakeError> {
-        let (mut traffic_secrets, mls_session, _) =
+        let (mut traffic_secrets, mls_session, _, _) =
             MlsSession::process_mls_update(connection, connection_update.mls_commit, false)?;
 
         self.mls_session = mls_session;

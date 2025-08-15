@@ -323,10 +323,11 @@ impl<State: PreHandshakeState> EncryptionProvider<State, true> {
     pub async fn handshake(
         self,
         connection: Arc<Mutex<Connection>>,
-        leaf_signer: HpqSignatureKeyPair,
+        t_leaf_signer: HpqSignatureKeyPair,
+        pq_leaf_signer: HpqSignatureKeyPair,
     ) -> Result<(EncryptionProvider<EstablishedState, true>, ClientIdentity), EncryptionProviderError>
     {
-        let mut handshake = MlsHandshake::new(connection, leaf_signer);
+        let mut handshake = MlsHandshake::new_server(connection, t_leaf_signer, pq_leaf_signer);
 
         let (channels, client_identity) = self.state.server_handshake(&mut handshake).await?;
 
@@ -351,7 +352,7 @@ impl<State: PreHandshakeState> EncryptionProvider<State, false> {
         client_id: Uuid,
         server_verifying_key: &[u8],
     ) -> Result<EncryptionProvider<EstablishedState, false>, EncryptionProviderError> {
-        let mut handshake = MlsHandshake::new(connection, leaf_signer);
+        let mut handshake = MlsHandshake::new_client(connection, leaf_signer);
 
         let channels = self
             .state
