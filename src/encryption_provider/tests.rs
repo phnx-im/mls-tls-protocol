@@ -307,20 +307,20 @@ async fn encryption_provider() {
         let server_traffic_based_policy = TrafficBasedUpdatePolicy::new(100);
         let policies: [(CombinedUpdatePolicy, CombinedUpdatePolicy); 4] = [
             (
-                into_t(client_time_based_policy),
-                into_t(server_time_based_policy),
+                into_t(client_time_based_policy.clone()),
+                into_t(server_time_based_policy.clone()),
             ),
             (
-                into_pq(client_time_based_policy),
-                into_pq(server_time_based_policy),
+                into_pq(client_time_based_policy.clone()),
+                into_pq(server_time_based_policy.clone()),
             ),
             (
-                into_t(client_traffic_based_policy),
-                into_t(server_traffic_based_policy),
+                into_t(client_traffic_based_policy.clone()),
+                into_t(server_traffic_based_policy.clone()),
             ),
             (
-                into_pq(client_traffic_based_policy),
-                into_pq(server_traffic_based_policy),
+                into_pq(client_traffic_based_policy.clone()),
+                into_pq(server_traffic_based_policy.clone()),
             ),
         ];
 

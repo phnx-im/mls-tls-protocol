@@ -5,7 +5,7 @@
 use chrono::{DateTime, Utc};
 use std::time::Duration;
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug)]
 pub struct CombinedUpdatePolicy {
     pub t_policy: UpdatePolicy,
     pub pq_policy: Option<UpdatePolicy>,
@@ -13,7 +13,9 @@ pub struct CombinedUpdatePolicy {
 
 impl CombinedUpdatePolicy {
     pub fn pq_update_is_due(&self, now: DateTime<Utc>) -> bool {
-        self.pq_policy.is_some_and(|p| p.update_is_due(now))
+        self.pq_policy
+            .as_ref()
+            .is_some_and(|p| p.update_is_due(now))
     }
 
     pub fn t_update_is_due(&self, now: DateTime<Utc>) -> bool {
@@ -31,14 +33,14 @@ impl CombinedUpdatePolicy {
     pub fn reset_pq(&mut self, now: DateTime<Utc>) {
         // Since PQ update simply T update, we reset both
         self.t_policy.reset(now);
-        if let Some(mut policy) = self.pq_policy {
+        if let Some(policy) = self.pq_policy.as_mut() {
             policy.reset(now);
         }
     }
 
     pub fn increment_bytes_transferred(&mut self, bytes: u64) {
         self.t_policy.increment_bytes_transferred(bytes);
-        if let Some(mut policy) = self.pq_policy {
+        if let Some(policy) = self.pq_policy.as_mut() {
             policy.increment_bytes_transferred(bytes);
         }
     }
@@ -61,7 +63,7 @@ impl Default for CombinedUpdatePolicy {
     }
 }
 
-#[derive(Clone, Default, Debug, Copy)]
+#[derive(Clone, Default, Debug)]
 pub struct UpdatePolicy {
     time_based: Option<TimeBasedUpdatePolicy>,
     traffic_based: Option<TrafficBasedUpdatePolicy>,
@@ -139,7 +141,7 @@ impl UpdatePolicy {
     }
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug)]
 pub struct TimeBasedUpdatePolicy {
     duration: Duration,
     last_update: DateTime<Utc>,
@@ -177,7 +179,7 @@ impl TimeBasedUpdatePolicy {
     }
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug)]
 pub struct TrafficBasedUpdatePolicy {
     update_threshold: u64,
     bytes_transferred: u64,
