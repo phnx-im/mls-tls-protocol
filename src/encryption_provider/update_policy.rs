@@ -61,7 +61,7 @@ impl Default for CombinedUpdatePolicy {
     }
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Default, Debug, Copy)]
 pub struct UpdatePolicy {
     time_based: Option<TimeBasedUpdatePolicy>,
     traffic_based: Option<TrafficBasedUpdatePolicy>,
@@ -100,6 +100,14 @@ impl UpdatePolicy {
             time_based,
             traffic_based,
         }
+    }
+
+    pub fn time_based(&self) -> Option<&TimeBasedUpdatePolicy> {
+        self.time_based.as_ref()
+    }
+
+    pub fn traffic_based(&self) -> Option<&TrafficBasedUpdatePolicy> {
+        self.traffic_based.as_ref()
     }
 
     pub fn update_is_due(&self, now: DateTime<Utc>) -> bool {
@@ -156,6 +164,14 @@ impl TimeBasedUpdatePolicy {
         }
     }
 
+    pub fn duration(&self) -> Duration {
+        self.duration
+    }
+
+    pub fn update_time(&self) -> DateTime<Utc> {
+        self.last_update
+    }
+
     pub fn set_update_time(&mut self, now: DateTime<Utc>) {
         self.last_update = now;
     }
@@ -173,6 +189,14 @@ impl TrafficBasedUpdatePolicy {
             update_threshold,
             bytes_transferred: 0,
         }
+    }
+
+    pub fn update_threshold(&self) -> u64 {
+        self.update_threshold
+    }
+
+    pub fn bytes_transferred(&self) -> u64 {
+        self.bytes_transferred
     }
 
     pub fn update_is_due(&self) -> bool {

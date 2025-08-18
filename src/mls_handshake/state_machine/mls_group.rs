@@ -8,7 +8,7 @@ use hpqmls::{
     messages::{HpqKeyPackageIn, HpqMlsMessageIn, HpqMlsMessageOut},
     HpqGroupId, HpqMlsGroup,
 };
-use openmls::prelude::{BasicCredential, SignatureScheme};
+use openmls::prelude::BasicCredential;
 use serde::{Deserialize, Serialize};
 use tls_codec::Deserialize as _;
 

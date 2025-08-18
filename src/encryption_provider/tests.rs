@@ -27,6 +27,7 @@ enum HandshakeEncryption {
 #[derive(Debug, Clone, PartialEq)]
 struct InitialPayload(Vec<u8>);
 
+#[expect(clippy::too_many_arguments)]
 async fn handle_new_connection(
     server_tcp_socket: TcpStream,
     server_t_signer: HpqSignatureKeyPair,
