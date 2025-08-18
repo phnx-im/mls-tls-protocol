@@ -50,7 +50,7 @@ fn handshake_inner(pq: bool, mode: PqtMode) {
     let client_leaf_signer = HpqSignatureKeyPair::new(mode.default_ciphersuite().into()).unwrap();
 
     let (client_state, client_hello) = ClientHandshake::start(
-        &mut client_connection,
+        &client_connection,
         &client_leaf_signer,
         server_verifying_key,
         test_profile_id,
@@ -92,7 +92,7 @@ fn handshake_inner(pq: bool, mode: PqtMode) {
     // update back, the traffic secrets will never be used, as the client will
     // immediately send an update itself after processing the server's update.
     let connection_update = server_state
-        .update(&mut server_connection, &server_leaf_signer, true, pq)
+        .update(&mut server_connection, server_leaf_signer, true, pq)
         .unwrap();
 
     let (client_traffic_secret, client_message_bytes) = client_state
@@ -112,7 +112,7 @@ fn handshake_inner(pq: bool, mode: PqtMode) {
     let (server_traffic_secrets, server_message_bytes) = server_state
         .receive_signaling_message(
             &mut server_connection,
-            &server_leaf_signer,
+            server_leaf_signer,
             &client_message_bytes.unwrap(),
         )
         .unwrap();
@@ -150,7 +150,7 @@ fn handshake_inner(pq: bool, mode: PqtMode) {
     let (server_traffic_secrets, server_message_bytes) = server_state
         .receive_signaling_message(
             &mut server_connection,
-            &server_leaf_signer,
+            server_leaf_signer,
             &connection_update,
         )
         .unwrap();
@@ -223,7 +223,7 @@ fn handshake_inner(pq: bool, mode: PqtMode) {
 
     // Server also creates an update
     let server_message_bytes = server_state
-        .update(&mut server_connection, &server_leaf_signer, false, pq)
+        .update(&mut server_connection, server_leaf_signer, false, pq)
         .unwrap();
 
     // Client processes server update
@@ -243,7 +243,7 @@ fn handshake_inner(pq: bool, mode: PqtMode) {
     let (server_traffic_secrets, server_message_bytes) = server_state
         .receive_signaling_message(
             &mut server_connection,
-            &server_leaf_signer,
+            server_leaf_signer,
             &connection_update,
         )
         .unwrap();

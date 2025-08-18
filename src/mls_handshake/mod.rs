@@ -255,14 +255,14 @@ impl CompletedHandshake for MlsHandshake {
         match &mut self.state {
             MlsHandshakeState::Client { leaf_signer, state } => {
                 let (client_secret, message_bytes) =
-                    state.update(&mut connection, &leaf_signer, false, pq)?;
+                    state.update(&mut connection, leaf_signer, false, pq)?;
                 Ok((
                     Some(SecretUpdate::ClientSecret(client_secret)),
                     message_bytes,
                 ))
             }
             MlsHandshakeState::Server { leaf_signer, state } => {
-                let message_bytes = state.update(&mut connection, &leaf_signer, false, pq)?;
+                let message_bytes = state.update(&mut connection, leaf_signer, false, pq)?;
                 Ok((None, message_bytes))
             }
             _ => Err(MlsHandshakeError::InvalidState),
@@ -283,7 +283,7 @@ impl CompletedHandshake for MlsHandshake {
             MlsHandshakeState::Server { leaf_signer, state } => {
                 let (traffic_secrets, message_bytes) = state.receive_signaling_message(
                     &mut connection,
-                    &leaf_signer,
+                    leaf_signer,
                     message_bytes,
                 )?;
                 Ok((Some(SecretUpdate::Both(traffic_secrets)), message_bytes))

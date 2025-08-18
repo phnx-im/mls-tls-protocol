@@ -99,6 +99,7 @@ async fn handle_new_connection(
     false
 }
 
+#[expect(clippy::too_many_arguments)]
 async fn server_task(
     server_listener: TcpListener,
     server_t_signer: HpqSignatureKeyPair,
@@ -163,6 +164,7 @@ async fn send_test_message(
     encryption_provider.read_bytes().await.unwrap()
 }
 
+#[expect(clippy::too_many_arguments)]
 async fn client_task(
     server_addr: SocketAddr,
     client_signer: HpqSignatureKeyPair,
@@ -354,6 +356,7 @@ async fn encryption_provider() {
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 async fn start_tasks(
     server_listener: TcpListener,
     server_t_signer: HpqSignatureKeyPair,
