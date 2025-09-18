@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use hpqmls::{
-    authentication::{HpqCredentialWithKey, HpqSignatureKeyPair, HpqVerifyingKey},
+    authentication::{HpqCredentialWithKey, HpqSignatureKeyPair, HpqSigner as _, HpqVerifyingKey},
     extension::PqtMode,
-    messages::{HpqKeyPackage, HpqMlsMessageOut},
+    messages::HpqKeyPackage,
     HpqMlsGroup,
 };
 use openmls::prelude::{
@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 use std::mem;
 
 use crate::{
-    mls_handshake::messages::{ConnectionUpdateIn, ServerHelloIn},
+    mls_handshake::messages::{
+        ConnectionUpdateIn, HandshakeMessageIn, HandshakeMessageOut, ServerHelloIn,
+    },
     tls_aead::SecretUpdate,
 };
 
@@ -35,7 +37,7 @@ impl ClientHandshake {
         let credential_with_key =
             HpqCredentialWithKey::new(client_id.as_bytes(), own_signature_keypair);
         let ciphersuite = if matches!(
-            own_signature_keypair.pq_signer.signature_scheme(),
+            own_signature_keypair.pq_signer().signature_scheme(),
             SignatureScheme::MLDSA87
         ) {
             PqtMode::ConfAndAuth.default_ciphersuite()
@@ -52,7 +54,7 @@ impl ClientHandshake {
             key_package: key_package_bundle.into_key_package().clone().into(),
         };
         let handshake_message =
-            MlsTlsHandshakeOut::from(HandshakePayloadOut::ClientHello(client_hello));
+            MlsTlsHandshakeOut::from(HandshakePayloadOut::ClientHello(Box::new(client_hello)));
         let message_bytes = handshake_message.tls_serialize_detached()?;
         Ok((
             WaitingForServerHello {
@@ -105,8 +107,8 @@ impl WaitingForServerHello {
 
         let mls_session = MlsSession::new(
             client_group.group_id().clone(),
-            client_group.t_group.epoch().as_u64(),
-            client_group.pq_group.epoch().as_u64(),
+            client_group.t_epoch().as_u64(),
+            client_group.pq_epoch().as_u64(),
         );
 
         let traffic_secrets = export_traffic_secrets(provider.crypto(), &client_group.t_group)?;
@@ -123,7 +125,7 @@ impl WaitingForServerHello {
 
 #[derive(Serialize, Deserialize)]
 struct PendingUpdate {
-    mls_message: HpqMlsMessageOut,
+    mls_message: HandshakeMessageOut,
     traffic_secrets: TrafficSecrets,
 }
 
@@ -165,8 +167,8 @@ impl ClientHandshakeState {
         leaf_signer: &HpqSignatureKeyPair,
     ) -> Result<(TrafficSecrets, Vec<u8>), HandshakeError> {
         // If we want to resume and we haven't gotten a confirmation from the
-        // server regarding our most recent update, we just resume use that
-        // update for the resumption.
+        // server regarding our most recent update, we just use that update for
+        // the resumption.
         let (mls_message, traffic_secrets) = match mem::take(&mut self.internal_state) {
             // If we're waiting for a server to confirm its own update we also
             // do a fresh update, because if the server hasn't gotten our epoch
@@ -174,15 +176,14 @@ impl ClientHandshakeState {
             ClientInternalState::WaitingForEpochKeyUpdateReturn(_)
             // If the state is "Running", we just do a fresh update
             | ClientInternalState::Running => {
-                let pq = true; // Always do a PQ update when resuming a connection
                 let mls_message = self
                     .mls_session
-                    .update(connection, leaf_signer, pq)
+                    .full_update(connection, leaf_signer)
                     .map_err(|e| HandshakeError::ResumptionError(e.into()))?;
 
                 let traffic_secrets = self.mls_session.merge_update(connection)?;
 
-                (mls_message, traffic_secrets)
+                (HandshakeMessageOut::HpqMls(Box::new(mls_message)), traffic_secrets)
             }
             ClientInternalState::WaitingForEpochKeyUpdate(pending_update)
             | ClientInternalState::WaitingForConnectionConfirmation(pending_update) => {
@@ -224,7 +225,8 @@ impl ClientHandshakeState {
         if self.is_waiting_for_response() {
             return Err(HandshakeError::WaitingForResponse);
         }
-        let mls_message = self.mls_session.update(connection, leaf_signer, pq)?;
+        let mls_message: HandshakeMessageOut =
+            self.mls_session.update(connection, leaf_signer, pq)?;
         let traffic_secrets = self.mls_session.merge_update(connection)?;
 
         let connection_update = SignalingMessageOut::ConnectionUpdate(ConnectionUpdateOut {
@@ -328,16 +330,21 @@ impl ClientHandshakeState {
         leaf_signer: &HpqSignatureKeyPair,
         connection_update: ConnectionUpdateIn,
     ) -> Result<(ClientSecret, Vec<u8>), HandshakeError> {
-        let (mut traffic_secrets, mls_session, _, _) =
-            MlsSession::process_mls_update(connection, connection_update.mls_commit, false)?;
+        let (mut traffic_secrets, mls_session, _, _) = match connection_update.mls_commit {
+            HandshakeMessageIn::HpqMls(hpq_mls_message_in) => {
+                MlsSession::process_full_update(connection, *hpq_mls_message_in, false)?
+            }
+            HandshakeMessageIn::Mls(mls_message_in) => {
+                MlsSession::process_t_update(connection, *mls_message_in, false)?
+            }
+        };
 
         self.mls_session = mls_session;
 
         let mut response_bytes = self.create_epoch_key_update(connection)?;
 
         if connection_update.update_requested.into() {
-            let pq = false; // For now, only T update can be requested
-            let connection_update = self.mls_session.update(connection, leaf_signer, pq)?;
+            let connection_update = self.mls_session.t_update(connection, leaf_signer)?;
 
             let new_traffic_secrets = self.mls_session.merge_update(connection)?;
 
@@ -347,7 +354,7 @@ impl ClientHandshakeState {
             traffic_secrets = new_traffic_secrets;
 
             let pending_update = PendingUpdate {
-                mls_message: connection_update.clone(),
+                mls_message: connection_update.clone().into(),
                 traffic_secrets: traffic_secrets.clone(),
             };
 
@@ -356,7 +363,7 @@ impl ClientHandshakeState {
             let connection_update_bytes =
                 SignalingMessageOut::ConnectionUpdate(ConnectionUpdateOut {
                     update_requested: false.into(),
-                    mls_commit: connection_update,
+                    mls_commit: connection_update.into(),
                 })
                 .tls_serialize_detached()?;
 

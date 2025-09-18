@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use hpqmls::messages::{HpqMlsMessageIn, HpqMlsMessageOut};
-use openmls::prelude::{TlsDeserialize, TlsSerialize, TlsSize};
+use openmls::prelude::{MlsMessageIn, MlsMessageOut, TlsDeserialize, TlsSerialize, TlsSize};
+use serde::{Deserialize, Serialize};
 
 #[repr(u16)]
 #[derive(Debug, TlsDeserialize, TlsSerialize, TlsSize, PartialEq)]
@@ -33,14 +34,14 @@ pub(super) struct MlsTlsHandshakeOut {
 #[repr(u16)]
 #[derive(Debug, TlsDeserialize, TlsSize)]
 pub(super) enum HandshakePayloadIn {
-    ClientHello(ClientHelloIn),
+    ClientHello(Box<ClientHelloIn>),
     Resumption(ResumptionIn),
 }
 
 #[repr(u16)]
 #[derive(Debug, TlsSerialize, TlsSize)]
 pub(super) enum HandshakePayloadOut {
-    ClientHello(ClientHelloOut),
+    ClientHello(Box<ClientHelloOut>),
     #[allow(dead_code)]
     Resumption(ResumptionOut),
 }
@@ -67,12 +68,12 @@ pub(super) struct ServerHelloOut {
 
 #[derive(Debug, TlsDeserialize, TlsSize)]
 pub(super) struct ResumptionIn {
-    pub(super) commit: HpqMlsMessageIn,
+    pub(super) commit: HandshakeMessageIn,
 }
 
 #[derive(Debug, TlsSerialize, TlsSize)]
 pub(super) struct ResumptionOut {
-    pub(super) commit: HpqMlsMessageOut,
+    pub(super) commit: HandshakeMessageOut,
 }
 
 // === In-band data & signaling ===
@@ -109,6 +110,44 @@ pub(super) enum SignalingMessageOut {
     KeyUpdate(KeyUpdate),
 }
 
+#[derive(Debug, TlsDeserialize, TlsSize)]
+#[repr(u8)]
+pub(super) enum HandshakeMessageIn {
+    HpqMls(Box<HpqMlsMessageIn>),
+    Mls(Box<MlsMessageIn>),
+}
+
+impl From<HpqMlsMessageIn> for HandshakeMessageIn {
+    fn from(msg: HpqMlsMessageIn) -> Self {
+        HandshakeMessageIn::HpqMls(Box::new(msg))
+    }
+}
+
+impl From<MlsMessageIn> for HandshakeMessageIn {
+    fn from(msg: MlsMessageIn) -> Self {
+        HandshakeMessageIn::Mls(Box::new(msg))
+    }
+}
+
+#[derive(Debug, Clone, TlsSerialize, TlsSize, Serialize, Deserialize)]
+#[repr(u8)]
+pub(super) enum HandshakeMessageOut {
+    HpqMls(Box<HpqMlsMessageOut>),
+    Mls(Box<MlsMessageOut>),
+}
+
+impl From<HpqMlsMessageOut> for HandshakeMessageOut {
+    fn from(msg: HpqMlsMessageOut) -> Self {
+        HandshakeMessageOut::HpqMls(Box::new(msg))
+    }
+}
+
+impl From<MlsMessageOut> for HandshakeMessageOut {
+    fn from(msg: MlsMessageOut) -> Self {
+        HandshakeMessageOut::Mls(Box::new(msg))
+    }
+}
+
 #[derive(Debug, TlsDeserialize, TlsSerialize, TlsSize)]
 pub(super) struct EpochKeyUpdate {
     pub(super) epoch: u64,
@@ -117,13 +156,13 @@ pub(super) struct EpochKeyUpdate {
 #[derive(Debug, TlsDeserialize, TlsSize)]
 pub(super) struct ConnectionUpdateIn {
     pub(super) update_requested: Boolean,
-    pub(super) mls_commit: HpqMlsMessageIn,
+    pub(super) mls_commit: HandshakeMessageIn,
 }
 
 #[derive(Debug, TlsSerialize, TlsSize)]
 pub(super) struct ConnectionUpdateOut {
     pub(super) update_requested: Boolean,
-    pub(super) mls_commit: HpqMlsMessageOut,
+    pub(super) mls_commit: HandshakeMessageOut,
 }
 
 #[derive(Debug, TlsDeserialize, TlsSerialize, TlsSize)]

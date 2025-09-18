@@ -32,7 +32,7 @@ impl ServerHandshake {
         message.check_version()?;
         match message.payload {
             HandshakePayloadIn::ClientHello(client_hello) => {
-                Self::process_client_hello(connection, t_leaf_signer, pq_leaf_signer, client_hello)
+                Self::process_client_hello(connection, t_leaf_signer, pq_leaf_signer, *client_hello)
             }
             HandshakePayloadIn::Resumption(resumption) => {
                 Self::process_resumption(connection, resumption)
