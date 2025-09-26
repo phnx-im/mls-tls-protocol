@@ -94,13 +94,18 @@ impl From<TrafficBasedUpdatePolicy> for UpdatePolicy {
 }
 
 impl UpdatePolicy {
+    /// Creates a new `UpdatePolicy` with the given time-based and traffic-based update policies.
+    ///
+    /// In case the given policies are **not** `None`, but either the time-based policy threshold
+    /// is under 1 second or the traffic-based policy threshold is 0, the policy will be ignored,
+    /// respectively.
     pub fn new(
         time_based: Option<TimeBasedUpdatePolicy>,
         traffic_based: Option<TrafficBasedUpdatePolicy>,
     ) -> Self {
-        UpdatePolicy {
-            time_based,
-            traffic_based,
+        Self {
+            time_based: time_based.filter(|p| p.duration.as_secs() > 0),
+            traffic_based: traffic_based.filter(|p| p.update_threshold > 0),
         }
     }
 
