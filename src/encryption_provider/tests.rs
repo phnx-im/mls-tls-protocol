@@ -77,14 +77,14 @@ async fn handle_new_connection(
 
     assert_eq!(client_id.0, expected_client_id.as_bytes());
 
-    tracing::info!("Completed handshake");
+    tracing::debug!("Completed handshake, sending initial payload");
     encryption_provider
         .send_bytes(initial_payload.0, Utc::now())
         .await
         .unwrap();
-    tracing::info!("Waiting for response");
+    tracing::debug!("Waiting for response");
     while let Some(bytes) = encryption_provider.read_bytes().await.unwrap() {
-        tracing::info!("Received bytes, preparing response");
+        tracing::debug!("Received bytes, preparing response");
         let response = String::from_utf8(bytes).unwrap().to_uppercase();
         let now = *global_test_time.lock().await;
         encryption_provider
@@ -95,7 +95,7 @@ async fn handle_new_connection(
             return true;
         }
     }
-    tracing::info!("Done");
+    tracing::info!("Connection closed");
     false
 }
 
@@ -196,9 +196,9 @@ async fn client_task(
         server_verifying_key.clone(),
     )
     .await;
-    tracing::info!("Completed handshake");
+    tracing::debug!("Completed handshake, waiting for initial payload");
     let received_initial_payload = InitialPayload(encryption_provider.read_bytes().await.unwrap());
-    tracing::info!("Received initial payload");
+    tracing::debug!("Received initial payload");
     assert_eq!(initial_payload, received_initial_payload);
     let messages = vec![
         "hello",

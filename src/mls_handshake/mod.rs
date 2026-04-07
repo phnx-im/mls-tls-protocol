@@ -72,6 +72,18 @@ enum MlsHandshakeState {
     },
 }
 
+impl MlsHandshakeState {
+    fn role(&self) -> &'static str {
+        match self {
+            MlsHandshakeState::None => "None",
+            MlsHandshakeState::InitialClient(_) => "InitialClient",
+            MlsHandshakeState::InitialServer { .. } => "InitialServer",
+            MlsHandshakeState::Client { .. } => "Client",
+            MlsHandshakeState::Server { .. } => "Server",
+        }
+    }
+}
+
 pub struct MlsHandshake {
     connection: Arc<Mutex<Connection>>,
     state: MlsHandshakeState,
@@ -111,6 +123,7 @@ impl Handshake for MlsHandshake {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     async fn server_handshake<
         E: std::error::Error + Send + Sync + 'static,
         S: Sink<Bytes, Error = E> + Unpin,
@@ -120,11 +133,18 @@ impl Handshake for MlsHandshake {
         rx: &mut R,
         tx: &mut S,
     ) -> Result<(TrafficSecrets, ClientIdentity), Self::Error> {
+        tracing::info!("Server handshake started, waiting for ClientHello");
+
         // Read the first message from the client
         let Some(Ok(first_message_bytes)) = rx.next().await else {
             tracing::error!("Failed to read ClientHello");
             return Err(MlsHandshakeError::DecodingError);
         };
+
+        tracing::info!(
+            size_bytes = first_message_bytes.data.len(),
+            "Received ClientHello"
+        );
 
         let initial_state = mem::replace(&mut self.state, MlsHandshakeState::None);
 
@@ -157,9 +177,17 @@ impl Handshake for MlsHandshake {
 
         self.state = MlsHandshakeState::Server { leaf_signer, state };
 
+        tracing::info!(
+            size_bytes = response_bytes.len(),
+            mode = ?mode,
+            "Sending ServerHello"
+        );
+
         tx.send(Bytes::from(response_bytes))
             .await
             .map_err(|e| MlsHandshakeError::TransportError(e.into()))?;
+
+        tracing::info!("Server handshake completed");
 
         Ok((traffic_secrets, client_identity))
     }
@@ -176,6 +204,8 @@ impl Handshake for MlsHandshake {
         client_id: Uuid,
         server_verifying_key: &[u8],
     ) -> Result<TrafficSecrets, MlsHandshakeError> {
+        tracing::info!("Client handshake started");
+
         let mut connection = self.connection.lock().await;
 
         ClientHandshakeState::create_table(&connection)?;
@@ -197,6 +227,9 @@ impl Handshake for MlsHandshake {
             })?;
         let (handshake_state, client_hello) =
             ClientHandshake::start(&connection, &leaf_signer, server_verifying_key, client_id)?;
+
+        tracing::info!(size_bytes = client_hello.len(), "Sending ClientHello");
+
         tx.send(Bytes::from(client_hello))
             .await
             .map_err(|e| MlsHandshakeError::TransportError(e.into()))?;
@@ -214,6 +247,11 @@ impl Handshake for MlsHandshake {
             }
         };
 
+        tracing::info!(
+            size_bytes = server_hello_bytes.data.len(),
+            "Received ServerHello"
+        );
+
         let (state, traffic_secrets) =
             handshake_state.receive_server_hello(&connection, &server_hello_bytes.data)?;
 
@@ -223,6 +261,8 @@ impl Handshake for MlsHandshake {
             leaf_signer,
             state: Box::new(state),
         };
+
+        tracing::info!("Client handshake completed");
 
         Ok(traffic_secrets)
     }
@@ -251,8 +291,11 @@ impl CompletedHandshake for MlsHandshake {
         &mut self,
         pq: bool,
     ) -> Result<(Option<SecretUpdate>, Vec<u8>), Self::Error> {
+        let update_type = if pq { "combined PQ" } else { "traditional" };
+        let role = self.state.role();
+
         let mut connection = self.connection.lock().await;
-        match &mut self.state {
+        let result = match &mut self.state {
             MlsHandshakeState::Client { leaf_signer, state } => {
                 let (client_secret, message_bytes) =
                     state.update(&mut connection, leaf_signer, false, pq)?;
@@ -266,30 +309,67 @@ impl CompletedHandshake for MlsHandshake {
                 Ok((None, message_bytes))
             }
             _ => Err(MlsHandshakeError::InvalidState),
+        };
+
+        match &result {
+            Ok((_, message_bytes)) => {
+                tracing::info!(
+                    update_type,
+                    size_bytes = message_bytes.len(),
+                    role,
+                    "Starting key update",
+                );
+            }
+            Err(e) => {
+                tracing::error!(update_type, error = %e, "Key update failed");
+            }
         }
+
+        result
     }
 
     async fn process_signaling_message(
         &mut self,
         message_bytes: &[u8],
     ) -> Result<(Option<SecretUpdate>, Option<Vec<u8>>), Self::Error> {
+        let role = self.state.role();
+        tracing::info!(
+            size_bytes = message_bytes.len(),
+            role,
+            "Processing incoming signaling message"
+        );
+
         let mut connection = self.connection.lock().await;
-        match &mut self.state {
+        let result = match &mut self.state {
             MlsHandshakeState::Client { leaf_signer, state } => {
                 let (secret_update, message_bytes) =
                     state.receive_signaling_message(&mut connection, leaf_signer, message_bytes)?;
                 Ok((secret_update, message_bytes))
             }
             MlsHandshakeState::Server { leaf_signer, state } => {
-                let (traffic_secrets, message_bytes) = state.receive_signaling_message(
-                    &mut connection,
-                    leaf_signer,
-                    message_bytes,
-                )?;
+                let (traffic_secrets, message_bytes) =
+                    state.receive_signaling_message(&mut connection, leaf_signer, message_bytes)?;
                 Ok((Some(SecretUpdate::Both(traffic_secrets)), message_bytes))
             }
             _ => Err(MlsHandshakeError::InvalidState),
+        };
+
+        match &result {
+            Ok((secret_update, response)) => {
+                let secrets_updated = secret_update.is_some();
+                let response_size = response.as_ref().map(|r| r.len());
+                tracing::info!(
+                    secrets_updated,
+                    response_size_bytes = ?response_size,
+                    "Signaling message processed"
+                );
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to process signaling message");
+            }
         }
+
+        result
     }
 
     async fn delete(&mut self) -> Result<(), Self::Error> {

@@ -57,7 +57,6 @@ impl MlsSession {
             .map_err(|e| HandshakeError::ClientHelloError(e.into()))?;
 
         let mode = key_package.mode();
-        tracing::info!("KeyPackage mode: {:?}", mode);
         let leaf_signer = match mode {
             PqtMode::ConfOnly => t_leaf_signer,
             PqtMode::ConfAndAuth => pq_leaf_signer,
@@ -117,11 +116,22 @@ impl MlsSession {
         leaf_signer: &HpqSignatureKeyPair,
         pq: bool,
     ) -> Result<HandshakeMessageOut, HandshakeError> {
-        if pq {
+        let update_type = if pq { "combined PQ" } else { "traditional" };
+        tracing::debug!(
+            update_type,
+            t_epoch = self.t_epoch,
+            pq_epoch = self.pq_epoch,
+            "MLS session update started",
+        );
+        let result = if pq {
             self.full_update(connection, leaf_signer).map(Into::into)
         } else {
             self.t_update(connection, leaf_signer).map(Into::into)
+        };
+        if result.is_ok() {
+            tracing::debug!(update_type, "MLS session update completed");
         }
+        result
     }
 
     pub(super) fn full_update(
@@ -191,6 +201,12 @@ impl MlsSession {
 
         self.t_epoch = group.t_epoch().as_u64();
         self.pq_epoch = group.pq_epoch().as_u64();
+
+        tracing::debug!(
+            t_epoch = self.t_epoch,
+            pq_epoch = self.pq_epoch,
+            "MLS session merged pending commit"
+        );
 
         export_traffic_secrets(provider.crypto(), &group.t_group)
     }

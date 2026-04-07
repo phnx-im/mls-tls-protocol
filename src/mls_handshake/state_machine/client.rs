@@ -225,6 +225,15 @@ impl ClientHandshakeState {
         if self.is_waiting_for_response() {
             return Err(HandshakeError::WaitingForResponse);
         }
+        let update_type = if pq { "combined PQ" } else { "traditional" };
+        tracing::debug!(
+            update_type,
+            update_requested,
+            t_epoch = self.mls_session.t_epoch,
+            pq_epoch = self.mls_session.pq_epoch,
+            "Client creating key update",
+        );
+
         let mls_message: HandshakeMessageOut =
             self.mls_session.update(connection, leaf_signer, pq)?;
         let traffic_secrets = self.mls_session.merge_update(connection)?;
@@ -245,6 +254,12 @@ impl ClientHandshakeState {
 
         self.store_update(connection)?;
 
+        tracing::debug!(
+            update_type,
+            size_bytes = message_bytes.len(),
+            "Client key update message created",
+        );
+
         Ok((traffic_secrets.client_secret, message_bytes))
     }
 
@@ -257,6 +272,12 @@ impl ClientHandshakeState {
         let signaling_message = SignalingMessageIn::tls_deserialize_exact(message_bytes)?;
 
         let incoming_message_type = signaling_message.message_type();
+
+        tracing::debug!(
+            message_type = incoming_message_type,
+            size_bytes = message_bytes.len(),
+            "Client received signaling message"
+        );
 
         let result = match signaling_message {
             SignalingMessageIn::ConnectionUpdate(connection_update) => {

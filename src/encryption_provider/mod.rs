@@ -397,15 +397,24 @@ impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
         loop {
             match message {
                 Some(InnerPlaintext::Application(b)) => {
+                    tracing::debug!(size_bytes = b.len(), "Received application data");
                     return Ok(Some(b));
                 }
                 Some(InnerPlaintext::Signaling(signaling_message)) => {
+                    tracing::info!(
+                        size_bytes = signaling_message.len(),
+                        "Received signaling message"
+                    );
                     let (secret_update, response) = self
                         .state
                         .handshake
                         .process_signaling_message(&signaling_message)
                         .await?;
                     if let Some(signaling_message) = response {
+                        tracing::info!(
+                            size_bytes = signaling_message.len(),
+                            "Sending signaling response"
+                        );
                         self.send(InnerPlaintext::Signaling(signaling_message))
                             .await?;
                     }
@@ -460,6 +469,15 @@ impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
     ) -> Result<(), EncryptionProviderError> {
         if self.update_policy.update_is_due(now) {
             let pq_update_is_due = self.update_policy.pq_update_is_due(now);
+            let update_type = if pq_update_is_due {
+                "combined PQ"
+            } else {
+                "traditional"
+            };
+            tracing::info!(
+                update_type,
+                "Update policy triggered key update",
+            );
             match self
                 .state
                 .handshake
@@ -467,6 +485,11 @@ impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
                 .await
             {
                 Ok((secret_update, message)) => {
+                    tracing::info!(
+                        update_type,
+                        signaling_size_bytes = message.len(),
+                        "Sending key update signaling message",
+                    );
                     self.send(InnerPlaintext::Signaling(message)).await?;
                     if let Some(secret_update) = secret_update {
                         self.update_cipher(secret_update)?;
@@ -478,8 +501,7 @@ impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
                     }
                 }
                 Err(MlsHandshakeError::HandshakeError(HandshakeError::WaitingForResponse)) => {
-                    // If we're waiting for a response, we will try again with
-                    // the next set of bytes.
+                    tracing::debug!("Key update deferred: waiting for response");
                 }
                 Err(e) => {
                     return Err(EncryptionProviderError::HandshakeError(e));
@@ -487,6 +509,8 @@ impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
             }
         }
         let bytes_len = bytes.len();
+
+        tracing::debug!(size_bytes = bytes_len, "Sending application data");
 
         let send_result = self.send(InnerPlaintext::Application(bytes)).await;
 

@@ -148,6 +148,15 @@ impl ServerHandshakeState {
         if self.is_waiting_for_response() {
             return Err(HandshakeError::WaitingForResponse);
         }
+        let update_type = if pq { "combined PQ" } else { "traditional" };
+        tracing::debug!(
+            update_type,
+            update_requested,
+            t_epoch = self.mls_session.t_epoch,
+            pq_epoch = self.mls_session.pq_epoch,
+            "Server creating key update",
+        );
+
         let mls_message = self.mls_session.update(connection, leaf_signer, pq)?;
 
         let connection_update = SignalingMessageOut::ConnectionUpdate(ConnectionUpdateOut {
@@ -158,6 +167,12 @@ impl ServerHandshakeState {
         let message_bytes = connection_update.tls_serialize_detached()?;
 
         self.internal_state = ServerInternalState::WaitingForUpdate;
+
+        tracing::debug!(
+            update_type,
+            size_bytes = message_bytes.len(),
+            "Server key update message created",
+        );
 
         Ok(message_bytes)
     }
@@ -171,6 +186,12 @@ impl ServerHandshakeState {
         let signaling_message = SignalingMessageIn::tls_deserialize_exact(message_bytes)?;
 
         let incoming_message_type = signaling_message.message_type();
+
+        tracing::debug!(
+            message_type = incoming_message_type,
+            size_bytes = message_bytes.len(),
+            "Server received signaling message"
+        );
 
         match signaling_message {
             SignalingMessageIn::ConnectionUpdate(connection_update) => {
@@ -209,10 +230,10 @@ impl ServerHandshakeState {
         leaf_signer: &HpqSignatureKeyPair,
         connection_update: ConnectionUpdateIn,
     ) -> Result<(TrafficSecrets, Vec<u8>), HandshakeError> {
-        println!("Processing connection update");
+        tracing::debug!("Server processing incoming connection update");
         let (traffic_secrets, mls_session, _client_identity, _mode) =
             MlsSession::process_mls_update(connection, connection_update.mls_commit, true)?;
-        println!("Done processing MLS update");
+        tracing::debug!("Server finished processing MLS update");
 
         // Client updates override any internal state, so after receiving one,
         // we're no longer waiting for anything
