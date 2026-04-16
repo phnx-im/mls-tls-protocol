@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use hpqmls::{
-    authentication::{HpqCredentialWithKey, HpqSignatureKeyPair, HpqSigner as _, HpqVerifyingKey},
+use apqmls::{
+    authentication::{ApqCredentialWithKey, ApqSignatureKeyPair, ApqSigner as _, ApqVerifyingKey},
     extension::PqtMode,
-    messages::HpqKeyPackage,
-    HpqMlsGroup,
+    messages::ApqKeyPackage,
+    ApqMlsGroup,
 };
 use openmls::prelude::{
     tls_codec::{Deserialize as _, Serialize as _},
@@ -29,13 +29,13 @@ pub(in crate::mls_handshake) struct ClientHandshake {}
 impl ClientHandshake {
     pub(in crate::mls_handshake) fn start(
         connection: &Connection,
-        own_signature_keypair: &HpqSignatureKeyPair,
-        server_verifying_key: HpqVerifyingKey,
+        own_signature_keypair: &ApqSignatureKeyPair,
+        server_verifying_key: ApqVerifyingKey,
         client_id: Uuid,
     ) -> Result<(WaitingForServerHello, Vec<u8>), HandshakeError> {
         let provider = Provider::from(connection);
         let credential_with_key =
-            HpqCredentialWithKey::new(client_id.as_bytes(), own_signature_keypair);
+            ApqCredentialWithKey::new(client_id.as_bytes(), own_signature_keypair);
         let ciphersuite = if matches!(
             own_signature_keypair.pq_signer().signature_scheme(),
             SignatureScheme::MLDSA87
@@ -44,7 +44,7 @@ impl ClientHandshake {
         } else {
             PqtMode::ConfOnly.default_ciphersuite()
         };
-        let key_package_bundle = HpqKeyPackage::builder().build(
+        let key_package_bundle = ApqKeyPackage::builder().build(
             &provider,
             ciphersuite,
             own_signature_keypair,
@@ -68,7 +68,7 @@ impl ClientHandshake {
 
 pub(in crate::mls_handshake) struct WaitingForServerHello {
     profile_id: Uuid,
-    server_verifying_key: HpqVerifyingKey,
+    server_verifying_key: ApqVerifyingKey,
 }
 
 impl WaitingForServerHello {
@@ -91,7 +91,7 @@ impl WaitingForServerHello {
             .build();
         // Join the group
         let provider = Provider::from(connection);
-        let client_group = HpqMlsGroup::new_from_welcome(&provider, &join_config, welcome, None)
+        let client_group = ApqMlsGroup::new_from_welcome(&provider, &join_config, welcome, None)
             .map_err(|e| {
                 tracing::error!("Error joining group: {:?}", e);
                 HandshakeError::ServerHelloError
@@ -164,7 +164,7 @@ impl ClientHandshakeState {
     pub(in crate::mls_handshake) fn resume(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &HpqSignatureKeyPair,
+        leaf_signer: &ApqSignatureKeyPair,
     ) -> Result<(TrafficSecrets, Vec<u8>), HandshakeError> {
         // If we want to resume and we haven't gotten a confirmation from the
         // server regarding our most recent update, we just use that update for
@@ -183,7 +183,7 @@ impl ClientHandshakeState {
 
                 let traffic_secrets = self.mls_session.merge_update(connection)?;
 
-                (HandshakeMessageOut::HpqMls(Box::new(mls_message)), traffic_secrets)
+                (HandshakeMessageOut::ApqMls(Box::new(mls_message)), traffic_secrets)
             }
             ClientInternalState::WaitingForEpochKeyUpdate(pending_update)
             | ClientInternalState::WaitingForConnectionConfirmation(pending_update) => {
@@ -218,7 +218,7 @@ impl ClientHandshakeState {
     pub(in crate::mls_handshake) fn update(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &HpqSignatureKeyPair,
+        leaf_signer: &ApqSignatureKeyPair,
         update_requested: bool,
         pq: bool,
     ) -> Result<(ClientSecret, Vec<u8>), HandshakeError> {
@@ -266,7 +266,7 @@ impl ClientHandshakeState {
     pub(in crate::mls_handshake) fn receive_signaling_message(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &HpqSignatureKeyPair,
+        leaf_signer: &ApqSignatureKeyPair,
         message_bytes: &[u8],
     ) -> Result<(Option<SecretUpdate>, Option<Vec<u8>>), HandshakeError> {
         let signaling_message = SignalingMessageIn::tls_deserialize_exact(message_bytes)?;
@@ -348,12 +348,12 @@ impl ClientHandshakeState {
     fn process_update(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &HpqSignatureKeyPair,
+        leaf_signer: &ApqSignatureKeyPair,
         connection_update: ConnectionUpdateIn,
     ) -> Result<(ClientSecret, Vec<u8>), HandshakeError> {
         let (mut traffic_secrets, mls_session, _, _) = match connection_update.mls_commit {
-            HandshakeMessageIn::HpqMls(hpq_mls_message_in) => {
-                MlsSession::process_full_update(connection, *hpq_mls_message_in, false)?
+            HandshakeMessageIn::ApqMls(apq_mls_message_in) => {
+                MlsSession::process_full_update(connection, *apq_mls_message_in, false)?
             }
             HandshakeMessageIn::Mls(mls_message_in) => {
                 MlsSession::process_t_update(connection, *mls_message_in, false)?

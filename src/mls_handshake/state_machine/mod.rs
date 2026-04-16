@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use hpqmls::key_package::KeyPackageNewError;
+use apqmls::key_package::KeyPackageNewError;
 #[cfg(test)]
-use hpqmls::HpqCiphersuite;
+use apqmls::ApqCiphersuite;
 use openmls::{
     group::{ExportSecretError, GroupId, MlsGroup, MlsGroupJoinConfig},
     prelude::{
@@ -40,9 +40,9 @@ pub(super) mod tests;
 pub(super) use mls_group::MlsSession;
 
 #[cfg(test)]
-pub const PQ_AUTH_CIPHERSUITE: HpqCiphersuite = HpqCiphersuite::default_pq_conf_and_auth();
+pub const PQ_AUTH_CIPHERSUITE: ApqCiphersuite = ApqCiphersuite::default_pq_conf_and_auth();
 #[cfg(test)]
-pub const T_AUTH_CIPHERSUITE: HpqCiphersuite = HpqCiphersuite::default_pq_conf();
+pub const T_AUTH_CIPHERSUITE: ApqCiphersuite = ApqCiphersuite::default_pq_conf();
 
 const SHARED_EXPORT_LABEL: &str = "MLS-TLS 1.0";
 const CLIENT_TRAFFIC_SECRET_LABEL: &str = "Initial Client Traffic Secret";

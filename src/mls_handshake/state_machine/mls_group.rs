@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use hpqmls::{
-    authentication::{HpqCredentialWithKey, HpqSignatureKeyPair, HpqSigner as _},
-    extension::{HpqMlsInfo, PqtMode},
-    messages::{HpqKeyPackageIn, HpqMlsMessageIn, HpqMlsMessageOut},
-    HpqGroupId, HpqMlsGroup,
+use apqmls::{
+    authentication::{ApqCredentialWithKey, ApqSignatureKeyPair, ApqSigner as _},
+    extension::{ApqMlsInfo, PqtMode},
+    messages::{ApqKeyPackageIn, ApqMlsMessageIn, ApqMlsMessageOut},
+    ApqGroupId, ApqMlsGroup,
 };
 use openmls::prelude::{
     BasicCredential, Credential, MlsMessageIn, MlsMessageOut, ProcessedMessageContent,
@@ -22,13 +22,13 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(in crate::mls_handshake) struct MlsSession {
-    pub(in crate::mls_handshake) group_id: HpqGroupId,
+    pub(in crate::mls_handshake) group_id: ApqGroupId,
     pub(in crate::mls_handshake) t_epoch: u64,
     pub(in crate::mls_handshake) pq_epoch: u64,
 }
 
 impl MlsSession {
-    pub(super) fn new(group_id: HpqGroupId, t_epoch: u64, pq_epoch: u64) -> Self {
+    pub(super) fn new(group_id: ApqGroupId, t_epoch: u64, pq_epoch: u64) -> Self {
         Self {
             group_id,
             t_epoch,
@@ -38,15 +38,15 @@ impl MlsSession {
 
     pub(super) fn create_server_session(
         connection: &Connection,
-        t_leaf_signer: &HpqSignatureKeyPair,
-        pq_leaf_signer: &HpqSignatureKeyPair,
-        key_package_in: HpqKeyPackageIn,
+        t_leaf_signer: &ApqSignatureKeyPair,
+        pq_leaf_signer: &ApqSignatureKeyPair,
+        key_package_in: ApqKeyPackageIn,
     ) -> Result<
         (
             Self,
             TrafficSecrets,
             ClientIdentity,
-            HpqMlsMessageOut,
+            ApqMlsMessageOut,
             PqtMode,
         ),
         HandshakeError,
@@ -72,12 +72,12 @@ impl MlsSession {
 
         // Identity is irrelevant, as clients directly verify the server's
         // verifying key.
-        let credential_with_key = HpqCredentialWithKey::new(b"server", leaf_signer);
+        let credential_with_key = ApqCredentialWithKey::new(b"server", leaf_signer);
 
         // Create a new group with the server as the only member
         let t_group_id = GroupId::from_slice(Uuid::new_v4().as_bytes());
         let pq_group_id = GroupId::from_slice(Uuid::new_v4().as_bytes());
-        let mut server_group = HpqMlsGroup::builder()
+        let mut server_group = ApqMlsGroup::builder()
             .with_group_ids(t_group_id, pq_group_id)
             .set_mode(mode)
             .use_ratchet_tree_extension(true)
@@ -113,7 +113,7 @@ impl MlsSession {
     pub(super) fn update(
         &self,
         connection: &Connection,
-        leaf_signer: &HpqSignatureKeyPair,
+        leaf_signer: &ApqSignatureKeyPair,
         pq: bool,
     ) -> Result<HandshakeMessageOut, HandshakeError> {
         let update_type = if pq { "combined PQ" } else { "traditional" };
@@ -137,11 +137,11 @@ impl MlsSession {
     pub(super) fn full_update(
         &self,
         connection: &Connection,
-        leaf_signer: &HpqSignatureKeyPair,
-    ) -> Result<HpqMlsMessageOut, HandshakeError> {
+        leaf_signer: &ApqSignatureKeyPair,
+    ) -> Result<ApqMlsMessageOut, HandshakeError> {
         let provider = Provider::from(connection);
 
-        let mut group = HpqMlsGroup::load(provider.storage(), &self.group_id)
+        let mut group = ApqMlsGroup::load(provider.storage(), &self.group_id)
             .map_err(|e| HandshakeError::ProviderError(e.into()))?
             .ok_or(HandshakeError::InvalidSessionId)?;
 
@@ -158,11 +158,11 @@ impl MlsSession {
     pub(super) fn t_update(
         &self,
         connection: &Connection,
-        leaf_signer: &HpqSignatureKeyPair,
+        leaf_signer: &ApqSignatureKeyPair,
     ) -> Result<MlsMessageOut, HandshakeError> {
         let provider = Provider::from(connection);
 
-        let mut group = HpqMlsGroup::load(provider.storage(), &self.group_id)
+        let mut group = ApqMlsGroup::load(provider.storage(), &self.group_id)
             .map_err(|e| HandshakeError::ProviderError(e.into()))?
             .ok_or(HandshakeError::InvalidSessionId)?;
 
@@ -191,7 +191,7 @@ impl MlsSession {
         connection: &Connection,
     ) -> Result<TrafficSecrets, HandshakeError> {
         let provider = Provider::from(connection);
-        let mut group = HpqMlsGroup::load(provider.storage(), &self.group_id)
+        let mut group = ApqMlsGroup::load(provider.storage(), &self.group_id)
             .map_err(|e| HandshakeError::ProviderError(e.into()))?
             .ok_or(HandshakeError::InvalidSessionId)?;
 
@@ -228,12 +228,12 @@ impl MlsSession {
         let group_epoch = t_group.epoch();
         let next_group_epoch = (group_epoch.as_u64() + 1).into();
 
-        let hpq_info = HpqMlsInfo::from_extensions(t_group.extensions())?.ok_or(
+        let apq_info = ApqMlsInfo::from_extensions(t_group.extensions())?.ok_or(
             HandshakeError::ValidationError("Missing HPQMLS extension".to_string()),
         )?;
 
         // Load the corresponding PQ group to potentially merge or clear pending commits
-        let mut pq_group = MlsGroup::load(provider.storage(), &hpq_info.pq_session_group_id)
+        let mut pq_group = MlsGroup::load(provider.storage(), &apq_info.pq_session_group_id)
             .map_err(|e| HandshakeError::ProviderError(e.into()))?
             .ok_or(HandshakeError::InvalidSessionId)?;
 
@@ -302,17 +302,17 @@ impl MlsSession {
         let traffic_secrets = export_traffic_secrets(provider.crypto(), &t_group)?;
 
         let mls_session = MlsSession {
-            group_id: hpq_info.group_id().clone(),
+            group_id: apq_info.group_id().clone(),
             t_epoch: t_group.epoch().as_u64(),
-            pq_epoch: hpq_info.pq_epoch.as_u64(),
+            pq_epoch: apq_info.pq_epoch.as_u64(),
         };
 
-        Ok((traffic_secrets, mls_session, client_identity, hpq_info.mode))
+        Ok((traffic_secrets, mls_session, client_identity, apq_info.mode))
     }
 
     pub(super) fn process_full_update(
         connection: &Connection,
-        mls_message: HpqMlsMessageIn,
+        mls_message: ApqMlsMessageIn,
         drop_pending_commit: bool,
     ) -> Result<(TrafficSecrets, MlsSession, ClientIdentity, PqtMode), HandshakeError> {
         let provider = &Provider::from(connection);
@@ -325,7 +325,7 @@ impl MlsSession {
 
         let group_id = protocol_message.group_id();
 
-        let mut group = HpqMlsGroup::load(provider.storage(), &group_id)
+        let mut group = ApqMlsGroup::load(provider.storage(), &group_id)
             .map_err(|e| HandshakeError::ProviderError(e.into()))?
             .ok_or(HandshakeError::InvalidSessionId)?;
 
@@ -399,7 +399,7 @@ impl MlsSession {
         };
 
         let mode = group
-            .hpq_info()
+            .apq_info()
             .ok_or(HandshakeError::ValidationError(
                 "Missing HPQMLS extension".to_string(),
             ))?
@@ -414,8 +414,8 @@ impl MlsSession {
         drop_pending_commit: bool,
     ) -> Result<(TrafficSecrets, MlsSession, ClientIdentity, PqtMode), HandshakeError> {
         match mls_message {
-            HandshakeMessageIn::HpqMls(hpq_mls_message_in) => {
-                Self::process_full_update(connection, *hpq_mls_message_in, drop_pending_commit)
+            HandshakeMessageIn::ApqMls(apq_mls_message_in) => {
+                Self::process_full_update(connection, *apq_mls_message_in, drop_pending_commit)
             }
             HandshakeMessageIn::Mls(mls_message_in) => {
                 Self::process_t_update(connection, *mls_message_in, drop_pending_commit)
@@ -429,7 +429,7 @@ impl MlsSession {
         confirmation: EpochKeyUpdate,
     ) -> Result<(), HandshakeError> {
         let provider = Provider::from(connection);
-        let group = HpqMlsGroup::load(provider.storage(), &self.group_id)
+        let group = ApqMlsGroup::load(provider.storage(), &self.group_id)
             .map_err(|e| HandshakeError::ProviderError(e.into()))?
             .ok_or(HandshakeError::InvalidSessionId)?;
 
@@ -449,7 +449,7 @@ impl MlsSession {
         connection: &Connection,
     ) -> Result<EpochKeyUpdate, HandshakeError> {
         let provider = Provider::from(connection);
-        let group = HpqMlsGroup::load(provider.storage(), &self.group_id)
+        let group = ApqMlsGroup::load(provider.storage(), &self.group_id)
             .map_err(|e| HandshakeError::ProviderError(e.into()))?
             .ok_or(HandshakeError::InvalidSessionId)?;
 
@@ -465,7 +465,7 @@ impl MlsSession {
         connection: &Connection,
     ) -> Result<(), HandshakeError> {
         let provider = Provider::from(connection);
-        let mut group = HpqMlsGroup::load(provider.storage(), &self.group_id)
+        let mut group = ApqMlsGroup::load(provider.storage(), &self.group_id)
             .map_err(|e| HandshakeError::ProviderError(e.into()))?
             .ok_or(HandshakeError::InvalidSessionId)?;
 

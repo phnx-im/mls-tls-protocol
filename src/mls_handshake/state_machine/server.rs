@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use hpqmls::{authentication::HpqSignatureKeyPair, extension::PqtMode};
+use apqmls::{authentication::ApqSignatureKeyPair, extension::PqtMode};
 
 use crate::{
     handshake::ClientIdentity,
@@ -24,8 +24,8 @@ pub(in crate::mls_handshake) struct ServerHandshakeResult {
 impl ServerHandshake {
     pub(in crate::mls_handshake) fn start(
         connection: &mut Connection,
-        t_leaf_signer: &HpqSignatureKeyPair,
-        pq_leaf_signer: &HpqSignatureKeyPair,
+        t_leaf_signer: &ApqSignatureKeyPair,
+        pq_leaf_signer: &ApqSignatureKeyPair,
         message_bytes: &[u8],
     ) -> Result<ServerHandshakeResult, HandshakeError> {
         let message = MlsTlsHandshakeIn::tls_deserialize_exact(message_bytes)?;
@@ -42,8 +42,8 @@ impl ServerHandshake {
 
     fn process_client_hello(
         connection: &mut Connection,
-        t_leaf_signer: &HpqSignatureKeyPair,
-        pq_leaf_signer: &HpqSignatureKeyPair,
+        t_leaf_signer: &ApqSignatureKeyPair,
+        pq_leaf_signer: &ApqSignatureKeyPair,
         client_hello: ClientHelloIn,
     ) -> Result<ServerHandshakeResult, HandshakeError> {
         let Some(key_package_in) = client_hello.key_package.into_key_package() else {
@@ -141,7 +141,7 @@ impl ServerHandshakeState {
     pub(in crate::mls_handshake) fn update(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &HpqSignatureKeyPair,
+        leaf_signer: &ApqSignatureKeyPair,
         update_requested: bool,
         pq: bool,
     ) -> Result<Vec<u8>, HandshakeError> {
@@ -180,7 +180,7 @@ impl ServerHandshakeState {
     pub(in crate::mls_handshake) fn receive_signaling_message(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &HpqSignatureKeyPair,
+        leaf_signer: &ApqSignatureKeyPair,
         message_bytes: &[u8],
     ) -> Result<(TrafficSecrets, Option<Vec<u8>>), HandshakeError> {
         let signaling_message = SignalingMessageIn::tls_deserialize_exact(message_bytes)?;
@@ -227,7 +227,7 @@ impl ServerHandshakeState {
     fn process_update(
         &mut self,
         connection: &mut Connection,
-        leaf_signer: &HpqSignatureKeyPair,
+        leaf_signer: &ApqSignatureKeyPair,
         connection_update: ConnectionUpdateIn,
     ) -> Result<(TrafficSecrets, Vec<u8>), HandshakeError> {
         tracing::debug!("Server processing incoming connection update");

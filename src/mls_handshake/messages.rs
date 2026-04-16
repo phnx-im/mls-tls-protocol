@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use hpqmls::messages::{HpqMlsMessageIn, HpqMlsMessageOut};
+use apqmls::messages::{ApqMlsMessageIn, ApqMlsMessageOut};
 use openmls::prelude::{MlsMessageIn, MlsMessageOut, TlsDeserialize, TlsSerialize, TlsSize};
 use serde::{Deserialize, Serialize};
 
@@ -48,22 +48,22 @@ pub(super) enum HandshakePayloadOut {
 
 #[derive(Debug, TlsDeserialize, TlsSize)]
 pub(super) struct ClientHelloIn {
-    pub(super) key_package: HpqMlsMessageIn,
+    pub(super) key_package: ApqMlsMessageIn,
 }
 
 #[derive(Debug, TlsSerialize, TlsSize)]
 pub(super) struct ClientHelloOut {
-    pub(super) key_package: HpqMlsMessageOut,
+    pub(super) key_package: ApqMlsMessageOut,
 }
 
 #[derive(Debug, TlsDeserialize, TlsSize)]
 pub(super) struct ServerHelloIn {
-    pub(super) welcome: HpqMlsMessageIn,
+    pub(super) welcome: ApqMlsMessageIn,
 }
 
 #[derive(Debug, TlsSerialize, TlsSize)]
 pub(super) struct ServerHelloOut {
-    pub(super) welcome: HpqMlsMessageOut,
+    pub(super) welcome: ApqMlsMessageOut,
 }
 
 #[derive(Debug, TlsDeserialize, TlsSize)]
@@ -113,13 +113,13 @@ pub(super) enum SignalingMessageOut {
 #[derive(Debug, TlsDeserialize, TlsSize)]
 #[repr(u8)]
 pub(super) enum HandshakeMessageIn {
-    HpqMls(Box<HpqMlsMessageIn>),
+    ApqMls(Box<ApqMlsMessageIn>),
     Mls(Box<MlsMessageIn>),
 }
 
-impl From<HpqMlsMessageIn> for HandshakeMessageIn {
-    fn from(msg: HpqMlsMessageIn) -> Self {
-        HandshakeMessageIn::HpqMls(Box::new(msg))
+impl From<ApqMlsMessageIn> for HandshakeMessageIn {
+    fn from(msg: ApqMlsMessageIn) -> Self {
+        HandshakeMessageIn::ApqMls(Box::new(msg))
     }
 }
 
@@ -132,13 +132,13 @@ impl From<MlsMessageIn> for HandshakeMessageIn {
 #[derive(Debug, Clone, TlsSerialize, TlsSize, Serialize, Deserialize)]
 #[repr(u8)]
 pub(super) enum HandshakeMessageOut {
-    HpqMls(Box<HpqMlsMessageOut>),
+    ApqMls(Box<ApqMlsMessageOut>),
     Mls(Box<MlsMessageOut>),
 }
 
-impl From<HpqMlsMessageOut> for HandshakeMessageOut {
-    fn from(msg: HpqMlsMessageOut) -> Self {
-        HandshakeMessageOut::HpqMls(Box::new(msg))
+impl From<ApqMlsMessageOut> for HandshakeMessageOut {
+    fn from(msg: ApqMlsMessageOut) -> Self {
+        HandshakeMessageOut::ApqMls(Box::new(msg))
     }
 }
 

@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use rand_chacha::ChaCha20Rng;
-use rand_core::{OsRng, SeedableRng as _};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use x25519_dalek::{EphemeralSecret, PublicKey};
@@ -18,8 +16,6 @@ const X25519_PUBLIC_KEY_LENGTH: usize = 32;
 pub enum X25519Error {
     #[error(transparent)]
     IoError(#[from] std::io::Error),
-    #[error("Random number generation error.")]
-    RandomError(#[from] rand_core::Error),
 }
 
 #[derive(Debug, Clone)]
@@ -38,8 +34,7 @@ impl PreHandshake for X25519Handshake {
         rx: &mut R,
         tx: &mut W,
     ) -> Result<HandshakePayload, Self::Error> {
-        let mut rng = ChaCha20Rng::from_rng(OsRng)?;
-        let private_key = EphemeralSecret::random_from_rng(&mut rng);
+        let private_key = EphemeralSecret::random();
 
         let public_key = PublicKey::from(&private_key);
 
@@ -66,8 +61,7 @@ impl PreHandshake for X25519Handshake {
         rx.read_exact(&mut client_pk_bytes).await?;
         let client_pk = client_pk_bytes.into();
 
-        let mut rng = ChaCha20Rng::from_rng(OsRng)?;
-        let private_key = EphemeralSecret::random_from_rng(&mut rng);
+        let private_key = EphemeralSecret::random();
 
         let public_key = PublicKey::from(&private_key);
         tx.write_all(public_key.as_bytes()).await?;

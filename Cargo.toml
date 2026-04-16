@@ -8,16 +8,22 @@ version = "0.1.1"
 edition = "2021"
 
 [dependencies]
-hpqmls = { version = "0.1.0", git = "https://github.com/phnx-im/hpqmls" }
-openmls = { version = "0.7.0", features = [
+apqmls = { version = "0.1.0", git = "https://github.com/phnx-im/apqmls" }
+openmls = { features = [
     "test-utils",
-], git = "https://github.com/openmls/openmls", branch = "konrad/hpqmls_dep_branch" }
-openmls_rust_crypto = { version = "0.4.0", git = "https://github.com/openmls/openmls", branch = "konrad/hpqmls_dep_branch" }
-openmls_sqlite_storage = { version = "0.1", git = "https://github.com/openmls/openmls", branch = "konrad/hpqmls_dep_branch" }
-openmls_traits = { version = "0.4.0", git = "https://github.com/openmls/openmls", branch = "konrad/hpqmls_dep_branch" }
-openmls_basic_credential = { version = "0.4.0", git = "https://github.com/openmls/openmls", branch = "konrad/hpqmls_dep_branch" }
+    "extensions-draft-08",
+], git = "https://github.com/openmls/openmls" }
+openmls_rust_crypto = { git = "https://github.com/openmls/openmls" }
+openmls_sqlite_storage = { git = "https://github.com/openmls/openmls", features = [
+    "extensions-draft-08",
+] }
+openmls_traits = { git = "https://github.com/openmls/openmls", features = [
+    "extensions-draft-08",
+] }
+openmls_basic_credential = { git = "https://github.com/openmls/openmls", features = [
+    "clonable",
+] }
 uuid = { version = "1.12.1", features = ["v4", "serde"] }
-rand_core = "0.6.4"
 chrono = "0.4.39"
 tokio-util = { version = "0.7.13", features = ["codec"] }
 serde = { version = "1", features = ["derive"] }
@@ -25,13 +31,21 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 thiserror = "2"
 futures = "0.3"
-rand_chacha = "0.3"
 tracing = "0.1"
-rusqlite = { version = "0.32", features = ["bundled", "uuid"] }
-refinery = "0.8"
-x25519-dalek = "2.0.1"
+rusqlite = { version = "0.37", features = ["bundled", "uuid"] }
+refinery = "0.9"
+x25519-dalek = { version = "2.0.1", features = ["getrandom"] }
 trait-variant = "0.1.2"
 tls_codec = "0.4.2"
+
+[patch."https://github.com/openmls/openmls.git"]
+# feat: Post-Quantum Cryptography support (ML-KEM + ML-DSA)
+# <https://github.com/openmls/openmls/pull/1994>
+openmls = { git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e" }
+openmls_basic_credential = { git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e" }
+openmls_rust_crypto = { git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e" }
+openmls_traits = { git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e" }
+openmls_memory_storage = { git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e" }
 
 
 [dev-dependencies]

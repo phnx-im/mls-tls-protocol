@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use apqmls::{authentication::ApqSigner, extension::PqtMode};
 use chrono::Utc;
-use hpqmls::{authentication::HpqSigner, extension::PqtMode};
 use std::{net::SocketAddr, time::Duration};
 use tokio::net::TcpListener;
 use tracing::{span, Instrument, Level};
@@ -30,8 +30,8 @@ struct InitialPayload(Vec<u8>);
 #[expect(clippy::too_many_arguments)]
 async fn handle_new_connection(
     server_tcp_socket: TcpStream,
-    server_t_signer: HpqSignatureKeyPair,
-    server_pq_signer: HpqSignatureKeyPair,
+    server_t_signer: ApqSignatureKeyPair,
+    server_pq_signer: ApqSignatureKeyPair,
     initial_payload: InitialPayload,
     update_policy: CombinedUpdatePolicy,
     connection: Arc<Mutex<Connection>>,
@@ -102,8 +102,8 @@ async fn handle_new_connection(
 #[expect(clippy::too_many_arguments)]
 async fn server_task(
     server_listener: TcpListener,
-    server_t_signer: HpqSignatureKeyPair,
-    server_pq_signer: HpqSignatureKeyPair,
+    server_t_signer: ApqSignatureKeyPair,
+    server_pq_signer: ApqSignatureKeyPair,
     initial_payload: InitialPayload,
     update_policy: CombinedUpdatePolicy,
     global_test_time: Arc<Mutex<DateTime<Utc>>>,
@@ -167,7 +167,7 @@ async fn send_test_message(
 #[expect(clippy::too_many_arguments)]
 async fn client_task(
     server_addr: SocketAddr,
-    client_signer: HpqSignatureKeyPair,
+    client_signer: ApqSignatureKeyPair,
     client_id: Uuid,
     server_verifying_key: Vec<u8>,
     initial_payload: InitialPayload,
@@ -275,14 +275,14 @@ async fn encryption_provider() {
     tracing_subscriber::fmt::init();
 
     let server_t_signer =
-        HpqSignatureKeyPair::new(PqtMode::ConfOnly.default_ciphersuite().into()).unwrap();
+        ApqSignatureKeyPair::new(PqtMode::ConfOnly.default_ciphersuite().into()).unwrap();
     let server_pq_signer =
-        HpqSignatureKeyPair::new(PqtMode::ConfAndAuth.default_ciphersuite().into()).unwrap();
+        ApqSignatureKeyPair::new(PqtMode::ConfAndAuth.default_ciphersuite().into()).unwrap();
 
     for mode in [PqtMode::ConfOnly, PqtMode::ConfAndAuth] {
         let now = Utc::now();
 
-        let client_signer = HpqSignatureKeyPair::new(mode.default_ciphersuite().into()).unwrap();
+        let client_signer = ApqSignatureKeyPair::new(mode.default_ciphersuite().into()).unwrap();
         let client_id = Uuid::new_v4();
 
         let initial_payload = InitialPayload(b"Initial payload".to_vec());
@@ -359,9 +359,9 @@ async fn encryption_provider() {
 #[expect(clippy::too_many_arguments)]
 async fn start_tasks(
     server_listener: TcpListener,
-    server_t_signer: HpqSignatureKeyPair,
-    server_pq_signer: HpqSignatureKeyPair,
-    client_signer: HpqSignatureKeyPair,
+    server_t_signer: ApqSignatureKeyPair,
+    server_pq_signer: ApqSignatureKeyPair,
+    client_signer: ApqSignatureKeyPair,
     client_id: Uuid,
     initial_payload: InitialPayload,
     server_policy: CombinedUpdatePolicy,
@@ -411,7 +411,7 @@ async fn spawn_client_encryption_provider(
     client_tcp_socket: TcpStream,
     update_policy: CombinedUpdatePolicy,
     connection: Arc<Mutex<Connection>>,
-    client_signer: HpqSignatureKeyPair,
+    client_signer: ApqSignatureKeyPair,
     client_id: Uuid,
     server_verifying_key: Vec<u8>,
 ) -> EncryptionProvider<EstablishedState, false> {

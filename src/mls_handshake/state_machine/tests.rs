@@ -8,8 +8,8 @@ use crate::mls_handshake::{
 
 use super::*;
 
-use hpqmls::{
-    authentication::{HpqSignatureKeyPair, HpqSigner},
+use apqmls::{
+    authentication::{ApqSignatureKeyPair, ApqSigner},
     extension::PqtMode,
 };
 use openmls_sqlite_storage::Connection;
@@ -38,16 +38,16 @@ fn handshake_inner(pq: bool, mode: PqtMode) {
     let test_profile_id = Uuid::new_v4();
 
     // Test initial handshake
-    //let server_t_leaf_signer = HpqSignatureKeyPair::new(T_CIPHERSUITE.into()).unwrap();
-    let server_pq_leaf_signer = HpqSignatureKeyPair::new(PQ_AUTH_CIPHERSUITE.into()).unwrap();
-    let server_t_leaf_signer = HpqSignatureKeyPair::new(T_AUTH_CIPHERSUITE.into()).unwrap();
+    //let server_t_leaf_signer = ApqSignatureKeyPair::new(T_CIPHERSUITE.into()).unwrap();
+    let server_pq_leaf_signer = ApqSignatureKeyPair::new(PQ_AUTH_CIPHERSUITE.into()).unwrap();
+    let server_t_leaf_signer = ApqSignatureKeyPair::new(T_AUTH_CIPHERSUITE.into()).unwrap();
 
     let server_verifying_key = match mode {
         PqtMode::ConfOnly => server_t_leaf_signer.verifying_key(),
         PqtMode::ConfAndAuth => server_pq_leaf_signer.verifying_key(),
     };
 
-    let client_leaf_signer = HpqSignatureKeyPair::new(mode.default_ciphersuite().into()).unwrap();
+    let client_leaf_signer = ApqSignatureKeyPair::new(mode.default_ciphersuite().into()).unwrap();
 
     let (client_state, client_hello) = ClientHandshake::start(
         &client_connection,

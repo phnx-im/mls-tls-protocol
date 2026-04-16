@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use apqmls::authentication::ApqSignatureKeyPair;
 use chrono::{DateTime, Utc};
 use futures::{ready, Sink, SinkExt, Stream, StreamExt};
-use hpqmls::authentication::HpqSignatureKeyPair;
 use openmls::prelude::{
     tls_codec::{self, Deserialize, Serialize},
     TlsDeserialize, TlsSerialize, TlsSize,
@@ -323,8 +323,8 @@ impl<State: PreHandshakeState> EncryptionProvider<State, true> {
     pub async fn handshake(
         self,
         connection: Arc<Mutex<Connection>>,
-        t_leaf_signer: HpqSignatureKeyPair,
-        pq_leaf_signer: HpqSignatureKeyPair,
+        t_leaf_signer: ApqSignatureKeyPair,
+        pq_leaf_signer: ApqSignatureKeyPair,
     ) -> Result<(EncryptionProvider<EstablishedState, true>, ClientIdentity), EncryptionProviderError>
     {
         let mut handshake = MlsHandshake::new_server(connection, t_leaf_signer, pq_leaf_signer);
@@ -348,7 +348,7 @@ impl<State: PreHandshakeState> EncryptionProvider<State, false> {
     pub async fn handshake(
         self,
         connection: Arc<Mutex<Connection>>,
-        leaf_signer: HpqSignatureKeyPair,
+        leaf_signer: ApqSignatureKeyPair,
         client_id: Uuid,
         server_verifying_key: &[u8],
     ) -> Result<EncryptionProvider<EstablishedState, false>, EncryptionProviderError> {
@@ -474,10 +474,7 @@ impl<const IS_SERVER: bool> EncryptionProvider<EstablishedState, IS_SERVER> {
             } else {
                 "traditional"
             };
-            tracing::info!(
-                update_type,
-                "Update policy triggered key update",
-            );
+            tracing::info!(update_type, "Update policy triggered key update",);
             match self
                 .state
                 .handshake

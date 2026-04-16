@@ -4,7 +4,7 @@
 
 use tokio::net::TcpStream;
 
-pub use hpqmls::extension::PqtMode;
+pub use apqmls::extension::PqtMode;
 
 use crate::{
     encryption_provider::{

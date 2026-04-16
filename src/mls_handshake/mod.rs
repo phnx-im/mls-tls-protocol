@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use futures::{Sink, SinkExt, Stream, StreamExt};
-use hpqmls::{
-    authentication::{HpqSignatureKeyPair, HpqVerifyingKey},
+use apqmls::{
+    authentication::{ApqSignatureKeyPair, ApqVerifyingKey},
     extension::PqtMode,
 };
+use futures::{Sink, SinkExt, Stream, StreamExt};
 use openmls::prelude::tls_codec::Deserialize;
 use openmls_rust_crypto::RustCrypto;
 use openmls_sqlite_storage::{Codec, Connection, SqliteStorageProvider};
@@ -57,17 +57,17 @@ pub enum MlsHandshakeError {
 enum MlsHandshakeState {
     #[default]
     None,
-    InitialClient(HpqSignatureKeyPair),
+    InitialClient(ApqSignatureKeyPair),
     InitialServer {
-        t_leaf_signer: HpqSignatureKeyPair,
-        pq_leaf_signer: HpqSignatureKeyPair,
+        t_leaf_signer: ApqSignatureKeyPair,
+        pq_leaf_signer: ApqSignatureKeyPair,
     },
     Client {
-        leaf_signer: HpqSignatureKeyPair,
+        leaf_signer: ApqSignatureKeyPair,
         state: Box<ClientHandshakeState>,
     },
     Server {
-        leaf_signer: HpqSignatureKeyPair,
+        leaf_signer: ApqSignatureKeyPair,
         state: ServerHandshakeState,
     },
 }
@@ -92,7 +92,7 @@ pub struct MlsHandshake {
 impl MlsHandshake {
     pub fn new_client(
         connection: Arc<Mutex<Connection>>,
-        leaf_signer: HpqSignatureKeyPair,
+        leaf_signer: ApqSignatureKeyPair,
     ) -> Self {
         Self {
             connection,
@@ -102,8 +102,8 @@ impl MlsHandshake {
 
     pub fn new_server(
         connection: Arc<Mutex<Connection>>,
-        t_leaf_signer: HpqSignatureKeyPair,
-        pq_leaf_signer: HpqSignatureKeyPair,
+        t_leaf_signer: ApqSignatureKeyPair,
+        pq_leaf_signer: ApqSignatureKeyPair,
     ) -> Self {
         Self {
             connection,
@@ -220,7 +220,7 @@ impl Handshake for MlsHandshake {
             return Err(MlsHandshakeError::InvalidState);
         };
 
-        let server_verifying_key = HpqVerifyingKey::tls_deserialize_exact(server_verifying_key)
+        let server_verifying_key = ApqVerifyingKey::tls_deserialize_exact(server_verifying_key)
             .map_err(|e| {
                 error!(error = ?e, "Failed to decode server verifying key");
                 MlsHandshakeError::DecodingError
@@ -395,16 +395,16 @@ mod tests {
     };
 
     use super::*;
+    use apqmls::authentication::ApqSigner;
     use futures::TryStreamExt;
-    use hpqmls::authentication::HpqSigner;
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use tokio_util::codec::{FramedRead, FramedWrite};
 
     #[tokio::test]
     async fn mls_handshake() {
-        let server_t_signer = HpqSignatureKeyPair::new(T_AUTH_CIPHERSUITE.into()).unwrap();
-        let server_pq_signer = HpqSignatureKeyPair::new(PQ_AUTH_CIPHERSUITE.into()).unwrap();
+        let server_t_signer = ApqSignatureKeyPair::new(T_AUTH_CIPHERSUITE.into()).unwrap();
+        let server_pq_signer = ApqSignatureKeyPair::new(PQ_AUTH_CIPHERSUITE.into()).unwrap();
 
         for mode in [PqtMode::ConfOnly, PqtMode::ConfAndAuth] {
             let (client_rx, server_tx) = tokio::io::duplex(1024);
@@ -428,7 +428,7 @@ mod tests {
                 PqtMode::ConfOnly => T_AUTH_CIPHERSUITE.into(),
                 PqtMode::ConfAndAuth => PQ_AUTH_CIPHERSUITE.into(),
             };
-            let client_signer = HpqSignatureKeyPair::new(signature_scheme).unwrap();
+            let client_signer = ApqSignatureKeyPair::new(signature_scheme).unwrap();
 
             let server_verifying_key = match mode {
                 PqtMode::ConfOnly => server_t_signer.verifying_key().to_bytes(),
