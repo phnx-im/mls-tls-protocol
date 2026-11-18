@@ -8,3 +8,4 @@ allow = ["AGPL-3.0-or-later", "Apache-2.0", "MIT", "Unicode-3.0"]
 [sources]
 unknown-git = "deny"
 required-git-spec = "rev"
+allow-git = ["https://github.com/openmls/openmls.git"]

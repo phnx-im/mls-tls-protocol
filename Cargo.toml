@@ -13,7 +13,16 @@ resolver = "2"
 
 [dependencies]
 thiserror = "2"
-zeroize = "1.8"
+zeroize = "1.9"
 
 [dev-dependencies]
 static_assertions = "1.1"
+# Exercise the pinned provider without OpenMLS test-utils.
+openmls = { git = "https://github.com/openmls/openmls.git", rev = "ba267737b9511e538a77a41f4480fbed28ff4e83", features = ["extensions-draft", "draft-ietf-mls-pq-ciphersuites"] }
+openmls_basic_credential = { git = "https://github.com/openmls/openmls.git", rev = "ba267737b9511e538a77a41f4480fbed28ff4e83", features = ["draft-ietf-mls-pq-ciphersuites"] }
+openmls_rust_crypto = { git = "https://github.com/openmls/openmls.git", rev = "ba267737b9511e538a77a41f4480fbed28ff4e83", features = ["extensions-draft", "draft-ietf-mls-pq-ciphersuites"] }
+aes-gcm = "0.11"
+chacha20poly1305 = "0.11"
+hpke-rs = "0.8"
+hpke-rs-crypto = "0.8"
+hpke-rs-rust-crypto = { version = "0.8", features = ["experimental"] }
