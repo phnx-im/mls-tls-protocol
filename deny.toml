@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Phoenix R&D GmbH <hello@phnx.im>
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[licenses]
+# The ordered-only graph uses a subset of these licenses.
+unused-allowed-license = "allow"
+allow = [
+    "0BSD",
+    "AGPL-3.0-or-later",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+[sources]
+unknown-git = "deny"
+required-git-spec = "rev"
+allow-git = [
+    "https://github.com/boxdot/openmls.git",
+    "https://github.com/phnx-im/apqmls",
+]

@@ -7,16 +7,11 @@ use openmls::prelude::{MlsMessageIn, MlsMessageOut, TlsDeserialize, TlsSerialize
 use serde::{Deserialize, Serialize};
 
 #[repr(u16)]
-#[derive(Debug, TlsDeserialize, TlsSerialize, TlsSize, PartialEq)]
+#[derive(Default, Debug, TlsDeserialize, TlsSerialize, TlsSize, PartialEq)]
 pub(super) enum ProtocolVersion {
     /// Version 0.1
+    #[default]
     V01,
-}
-
-impl Default for ProtocolVersion {
-    fn default() -> Self {
-        Self::V01
-    }
 }
 
 #[derive(Debug, TlsDeserialize, TlsSize)]
