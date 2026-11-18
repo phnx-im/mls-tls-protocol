@@ -11,73 +11,9 @@ license = "AGPL-3.0-or-later"
 [workspace]
 resolver = "2"
 
-[features]
-# Preserve the existing API for current callers. New TCP consumers disable defaults.
-default = ["legacy"]
-legacy = [
-    "dep:apqmls",
-    "dep:openmls",
-    "dep:openmls_rust_crypto",
-    "dep:openmls_sqlite_storage",
-    "dep:openmls_traits",
-    "dep:openmls_basic_credential",
-    "dep:uuid",
-    "dep:chrono",
-    "dep:tokio-util",
-    "dep:serde",
-    "dep:serde_json",
-    "dep:tokio",
-    "dep:futures",
-    "dep:tracing",
-    "dep:rusqlite",
-    "dep:refinery",
-    "dep:x25519-dalek",
-    "dep:trait-variant",
-    "dep:tls_codec",
-]
-
 [dependencies]
-zeroize = "1.8"
-
-apqmls = { optional = true, version = "0.1.0", git = "https://github.com/phnx-im/apqmls", rev = "dc767b16677877ae1b3898f32653f5fe3a9545be" }
-openmls = { optional = true, features = [
-    "test-utils",
-    "extensions-draft-08",
-], git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e" }
-openmls_rust_crypto = { optional = true, git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e" }
-openmls_sqlite_storage = { optional = true, git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e", features = [
-    "extensions-draft-08",
-] }
-openmls_traits = { optional = true, git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e", features = [
-    "extensions-draft-08",
-] }
-openmls_basic_credential = { optional = true, git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e", features = [
-    "clonable",
-] }
-uuid = { optional = true, version = "1.12.1", features = ["v4", "serde"] }
-chrono = { optional = true, version = "0.4.39" }
-tokio-util = { optional = true, version = "0.7.13", features = ["codec"] }
-serde = { optional = true, version = "1", features = ["derive"] }
-serde_json = { optional = true, version = "1" }
-tokio = { optional = true, version = "1", features = ["full"] }
 thiserror = "2"
-futures = { optional = true, version = "0.3" }
-tracing = { optional = true, version = "0.1" }
-rusqlite = { optional = true, version = "0.37", features = ["bundled", "uuid"] }
-refinery = { optional = true, version = "0.9" }
-x25519-dalek = { optional = true, version = "2.0.1", features = ["getrandom"] }
-trait-variant = { optional = true, version = "0.1.2" }
-tls_codec = { optional = true, version = "0.4.2" }
-
-[patch."https://github.com/openmls/openmls.git"]
-# feat: Post-Quantum Cryptography support (ML-KEM + ML-DSA)
-# <https://github.com/openmls/openmls/pull/1994>
-openmls = { git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e" }
-openmls_basic_credential = { git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e" }
-openmls_rust_crypto = { git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e" }
-openmls_traits = { git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e" }
-openmls_memory_storage = { git = "https://github.com/boxdot/openmls.git", rev = "c71df9295f54c7fba9b56451a06edbba96bf651e" }
+zeroize = "1.8"
 
 [dev-dependencies]
 static_assertions = "1.1"
-tracing-subscriber = "0.3.19"

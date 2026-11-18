@@ -10,27 +10,8 @@
 //!
 //! The ordered API currently validates configuration and defines the
 //! application contract. Protocol operations report an error until their
-//! implementation is available. Depend on this crate with
-//! `default-features = false` for the ordered API alone.
+//! implementation is available.
 
 mod ordered;
 
 pub use ordered::*;
-
-#[cfg(feature = "legacy")]
-pub mod authentication;
-#[cfg(feature = "legacy")]
-pub mod encryption_provider;
-#[cfg(feature = "legacy")]
-pub mod handshake;
-#[cfg(feature = "legacy")]
-pub mod mls_handshake;
-#[cfg(feature = "legacy")]
-pub mod pre_handshake;
-#[cfg(feature = "legacy")]
-pub mod tls_aead;
-
-#[cfg(feature = "legacy")]
-pub use apqmls::authentication::{
-    ApqSignatureKeyPair, ApqSignatureScheme, ApqSigner, ApqStorageId,
-};
