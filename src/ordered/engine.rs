@@ -2,32 +2,6 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The control plane: sessions, handshakes, epochs, reconnection.
-//!
-//! One [`Engine`] per process holds every session in both roles. It is
-//! driven from one thread. Handshake and Commit processing, which costs PQ
-//! key agreement and signatures, leaves the engine as [`Job`]s that the
-//! application runs on a thread pool. What remains on the engine thread is
-//! bookkeeping, hashing, and the storage transactions of CONTRACT.md.
-//!
-//! The application runs [`StreamConnection`] on its data-plane workers. The
-//! engine and the connections talk through opaque messages that the
-//! application routes by [`ConnectionHandle`]: [`ToEngine`] from a
-//! connection, [`ToConnection`] to one. Nothing is shared between them
-//! except the key slot used to retire the connection upon adoption.
-//!
-//! Ordering: the [`ToEngine`] messages of one connection reach the engine
-//! in the order the connection produced them, and before its
-//! [`Engine::connection_closed`]. Messages from a connection the engine has
-//! already given up, such as the old connection after an adoption, are
-//! dropped by handle.
-//!
-//! Time: every input carries the caller's [`Instant`]. Wall time comes
-//! with [`Engine::handle_timeout`] and [`Job::run`]. The engine uses it for
-//! its last-alive record and for the lifetimes of KeyPackages and
-//! LeafNodes, and asks for a timeout at least every
-//! `last_alive_interval`.
-
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
@@ -45,15 +19,19 @@ use super::storage::{StoreWrite, StoredState};
 use super::stream::StreamConnection;
 use super::time::{Instant, WallTime};
 
+/// The single owner of session, handshake, epoch, and reconnection state.
+///
+/// See the [architecture](crate#architecture) for the event loop and
+/// message routing.
 pub struct Engine {
     admission: Arc<Admission>,
     owner: PhantomData<Cell<()>>,
 }
 
 impl Engine {
-    /// An engine with no sessions, for a store that is empty. The
-    /// application holds an exclusive lock on the store for as long as the
-    /// engine lives (CONTRACT.md, "Storage").
+    /// Creates an engine with no sessions for an empty store. The
+    /// application holds an exclusive lock on the store for the engine's
+    /// lifetime. See [durable storage](crate#durable-storage).
     pub fn new(config: EngineConfig) -> Result<Self, ConfigError> {
         config.validate()?;
         Ok(Self {
@@ -280,7 +258,7 @@ pub enum RestoreOrigin {
     /// created after this restore, also across later restores reported as
     /// `Latest`. For application protocols without early data there is
     /// nothing to mark. Sessions that moved on since the copy are lost, and
-    /// their clients get no answer (requirements.md, profile item 6).
+    /// their clients get no answer to a Reconnect.
     MayBeEarlierCopy,
 }
 

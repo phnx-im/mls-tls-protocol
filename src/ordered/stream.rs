@@ -2,31 +2,6 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The ordered binding over TCP (MLS-TLS).
-//!
-//! Records carry no sequence number. A record's nonce is its place in the
-//! stream, so the order of sealing is the order on the wire, and an epoch
-//! change has to sit at an exact place in the stream. One owner therefore
-//! does all reading, sealing, and applying of engine messages for a
-//! connection, and takes `&mut self` for each. Writing what it produces to
-//! the socket in that order is the owner's job.
-//!
-//! A sealed record can't be dropped: the records after it would no longer
-//! open. A caller that has to shed load drops data before `seal`, never
-//! after, and bounds its queue of unsealed data.
-//!
-//! Data records carry opaque application data. MLS-TLS doesn't tell one
-//! kind of data from another, so the application protocol defines what is
-//! in a record. The VPN's protocol puts one IP packet or one control
-//! message in each (contract/vpn-protocol.md).
-//!
-//! The engine can retire a connection without its owner. When it adopts a
-//! newer connection of the session, it deletes this connection's keys
-//! itself, through a slot the two share, before it sends the Adopted
-//! (profile "Protection by the transport binding"). The owner's next call
-//! returns [`InterruptCause::Replaced`]. An owner that is stuck in a write
-//! therefore delays no reconnection.
-
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ops::Range;
@@ -39,6 +14,10 @@ use super::engine::{EngineError, ToConnection, ToEngine};
 use super::ids::ConnectionHandle;
 use super::time::Instant;
 
+/// One ordered TCP connection, driven by one mutable owner.
+///
+/// See [TCP record ordering](crate#tcp-record-ordering) for the caller's
+/// obligations when routing engine messages and writing records.
 pub struct StreamConnection {
     handle: ConnectionHandle,
     owner: PhantomData<Cell<()>>,
@@ -198,8 +177,7 @@ pub struct Interrupted {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SealError {
-    /// The payload is larger than the connection allows. The VPN answers
-    /// with ICMP "packet too big".
+    /// The payload is larger than the connection allows.
     #[error("payload exceeds {max_payload} bytes")]
     TooLarge { max_payload: usize },
     /// Not enough room around the payload.

@@ -2,17 +2,6 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Authorization: the application decides who gets a session.
-//!
-//! The library authorizes nothing by itself. It asks when a session is
-//! created, when a Commit changes the peer's signature key or credential,
-//! and when a time the application set for the session passes.
-//! Reconnections are not authorized: a session that the application doesn't
-//! close lives on through Reconnects for as long as its time bound allows.
-//! Revocation therefore means calling [`crate::Engine::close_session`], and
-//! after every restore the application reconciles
-//! [`crate::Engine::sessions`] with its registry.
-
 use std::net::SocketAddr;
 
 use super::close::CloseReason;
@@ -70,6 +59,9 @@ pub enum AuthorizationStage {
     Reauthorize,
 }
 
+/// A request for the application to check the peer against its policy.
+///
+/// See [authorization](crate#authorization) for the session lifecycle.
 #[derive(Clone, Debug)]
 pub struct AuthorizationRequest {
     pub id: RequestId,
@@ -92,8 +84,8 @@ pub enum Decision {
         /// delete. It goes only once the new session's epoch 1 is
         /// confirmed, because a replayed ClientHello must not end a live
         /// session. The new session's first stored transaction names the
-        /// old one, so a crash between the two writes still completes the
-        /// replacement on restore (CONTRACT.md, "Storage").
+        /// old one, so [restore completes the replacement](crate#replacing-a-session)
+        /// if a crash occurs before the old session's deletion.
         replaces: Option<SessionId>,
         /// Stored with the session and handed back in
         /// [`crate::SessionInfo`], for example a lease or a policy version.

@@ -2,20 +2,6 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Durable session state.
-//!
-//! The engine describes every change to stored state as a [`StoreWrite`]
-//! and holds back each output that depends on it until the application
-//! reports the write durable with [`crate::Engine::store_done`]. A crash
-//! therefore never leaves the peer ahead of what is stored. CONTRACT.md
-//! lists every write and the output it gates.
-//!
-//! The library owns the format of the records, versions it, and rejects the
-//! state of today's library. The application stores them as opaque bytes.
-//! What a store has to guarantee is in CONTRACT.md ("Storage"): atomic
-//! transactions, a real flush, encryption at rest, no backups, one engine
-//! per store.
-
 use zeroize::Zeroize;
 
 use super::ids::{SessionId, TxnId};
@@ -103,6 +89,9 @@ pub enum StoreOp {
 /// Transactions of different sessions are independent, so a store may keep
 /// one file or one key per session and acknowledge each as it finishes. No
 /// transaction spans two sessions.
+///
+/// See [durable storage](crate#durable-storage) for what each write gates
+/// and what the application store must guarantee.
 pub enum StoreWrite {
     Session {
         txn: TxnId,
