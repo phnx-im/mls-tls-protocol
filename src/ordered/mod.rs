@@ -16,9 +16,22 @@ mod close;
 mod config;
 mod engine;
 mod ids;
+#[expect(
+    dead_code,
+    reason = "wired into connection state when the engine establishes sessions"
+)]
+mod record;
 mod storage;
 mod stream;
 mod time;
+#[expect(
+    dead_code,
+    reason = "wired into the engine and connections as their protocol states land"
+)]
+mod wire;
+
+#[cfg(fuzzing)]
+pub use wire::fuzz_wire;
 
 pub use auth::{
     AuthorizationRequest, AuthorizationStage, CredentialEvidence, Decision, PeerCredential,

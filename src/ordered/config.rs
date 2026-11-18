@@ -16,7 +16,8 @@ use std::time::Duration;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-use super::buf::{MAX_PLAINTEXT, TAG_LEN};
+use super::buf::TAG_LEN;
+use super::wire::MAX_PLAINTEXT;
 
 /// The binding a session uses. Fixed when the session is created. A session
 /// never moves to the other binding, so changing transport means a new

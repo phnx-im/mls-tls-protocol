@@ -21,6 +21,7 @@ dependencies = [
  "cipher",
  "cpubits",
  "cpufeatures",
+ "zeroize",
 ]
 
 [[package]]
@@ -35,6 +36,7 @@ dependencies = [
  "ctr",
  "ctutils",
  "ghash",
+ "zeroize",
 ]
 
 [[package]]
@@ -45,6 +47,12 @@ checksum = "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "allocation-counter"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "beb9e990c0a33699f1984d85a6abead615ccc72dd8130bf3e15dcabe2ca149c9"
 
 [[package]]
 name = "autocfg"
@@ -97,6 +105,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
+ "zeroize",
 ]
 
 [[package]]
@@ -140,6 +149,7 @@ dependencies = [
  "cipher",
  "cpufeatures",
  "rand_core",
+ "zeroize",
 ]
 
 [[package]]
@@ -152,6 +162,7 @@ dependencies = [
  "chacha20",
  "cipher",
  "poly1305",
+ "zeroize",
 ]
 
 [[package]]
@@ -355,6 +366,7 @@ dependencies = [
  "const-oid",
  "crypto-common",
  "ctutils",
+ "zeroize",
 ]
 
 [[package]]
@@ -533,6 +545,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2eecf2d5dc9b66b732b97707a0210906b1d30523eb773193ab777c0c84b3e8d5"
 dependencies = [
  "polyval",
+ "zeroize",
 ]
 
 [[package]]
@@ -1322,13 +1335,16 @@ name = "mls-tls-protocol"
 version = "0.1.1"
 dependencies = [
  "aes-gcm",
+ "allocation-counter",
  "chacha20poly1305",
+ "hmac",
  "hpke-rs",
  "hpke-rs-crypto",
  "hpke-rs-rust-crypto",
  "openmls",
  "openmls_basic_credential",
  "openmls_rust_crypto",
+ "sha2",
  "static_assertions",
  "thiserror",
  "zeroize",
@@ -1630,6 +1646,7 @@ dependencies = [
  "cpubits",
  "cpufeatures",
  "universal-hash",
+ "zeroize",
 ]
 
 [[package]]

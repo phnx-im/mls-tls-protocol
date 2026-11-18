@@ -16,6 +16,8 @@ authorization, and persistent storage. The public API lives in
   messages exchanged with connection owners.
 - `src/ordered/stream.rs` and `buf.rs` define the TCP connection and
   caller-owned record buffers.
+- `src/ordered/wire/` contains bounded wire codecs. `record.rs` handles
+  directional record keys, nonces, in-place encryption, and key usage.
 - `src/ordered/config.rs`, `auth.rs`, `storage.rs`, and `time.rs` define
   the application interfaces for configuration, authorization, storage,
   and clocks.
@@ -44,3 +46,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
 ```
 
 Run `cargo deny --locked check` when dependencies change and before a release.
+Run `bash fuzz/run.sh` with `cargo-afl` installed to reproduce the wire
+fuzz smoke test in CI. Use `bash fuzz/run.sh -V 90` for a longer local run.
+Regenerate the independent record vectors with
+`ruby tests/vectors/record_vectors.rb > tests/vectors/records.txt` when their
+inputs change.

@@ -75,6 +75,21 @@ connection's keys via a shared key slot before sending Adopted. That
 retires the old connection even if its owner is blocked on a socket
 write. Its next call reports `InterruptCause::Replaced`.
 
+### Wire codecs and record protection
+
+The wire codecs handle TLS record headers, handshake fragments, the
+pre-handshake envelopes, and the ordered profile's messages. They reject
+oversized handshake lengths as soon as the four-byte header is complete.
+MLS-TLS dispatches the private-use TwoPartyMessage format itself and
+hands standard MLS objects to OpenMLS.
+
+The record layer owns a key and sequence number per direction. It derives
+the key and IV directly from the supplied traffic secret, authenticates
+the five-byte outer header, and opens records in place. Reassembly joins
+handshake fragments only within the same protection context. It
+preserves complete MLS message bytes for the caller to classify according
+to whether they came from the current connection's epoch records.
+
 ### Authorization
 
 The application binds the verified signature key and MLS credential to

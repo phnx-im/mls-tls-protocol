@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Phoenix R&D GmbH <hello@phnx.im>
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Wire codec fuzz smoke test
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - run: rustup update stable --no-self-update
+      - run: cargo install cargo-afl --version 0.18.2 --locked
+      - run: sudo sysctl -w kernel.core_pattern=core
+      - run: bash fuzz/run.sh

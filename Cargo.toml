@@ -12,17 +12,24 @@ license = "AGPL-3.0-or-later"
 resolver = "2"
 
 [dependencies]
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "zeroize"] }
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["zeroize"] }
+hmac = { version = "0.13", features = ["zeroize"] }
+# Keep standard MLSMessage decoding on the same pin as the provider probes.
+openmls = { git = "https://github.com/openmls/openmls.git", rev = "ba267737b9511e538a77a41f4480fbed28ff4e83", features = ["extensions-draft", "draft-ietf-mls-pq-ciphersuites"] }
+sha2 = { version = "0.11", features = ["zeroize"] }
 thiserror = "2"
 zeroize = "1.9"
 
 [dev-dependencies]
+allocation-counter = "0.8"
 static_assertions = "1.1"
 # Exercise the pinned provider without OpenMLS test-utils.
-openmls = { git = "https://github.com/openmls/openmls.git", rev = "ba267737b9511e538a77a41f4480fbed28ff4e83", features = ["extensions-draft", "draft-ietf-mls-pq-ciphersuites"] }
 openmls_basic_credential = { git = "https://github.com/openmls/openmls.git", rev = "ba267737b9511e538a77a41f4480fbed28ff4e83", features = ["draft-ietf-mls-pq-ciphersuites"] }
 openmls_rust_crypto = { git = "https://github.com/openmls/openmls.git", rev = "ba267737b9511e538a77a41f4480fbed28ff4e83", features = ["extensions-draft", "draft-ietf-mls-pq-ciphersuites"] }
-aes-gcm = "0.11"
-chacha20poly1305 = "0.11"
 hpke-rs = "0.8"
 hpke-rs-crypto = "0.8"
 hpke-rs-rust-crypto = { version = "0.8", features = ["experimental"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }

@@ -6,9 +6,8 @@ use thiserror::Error;
 
 use super::config::Binding;
 use super::engine::EngineError;
+use super::wire::{HEADER_LEN, MAX_PLAINTEXT};
 
-pub(super) const HEADER_LEN: usize = 5;
-pub(super) const MAX_PLAINTEXT: usize = 1 << 14;
 pub(super) const TAG_LEN: usize = 16;
 
 /// A payload in a caller-owned buffer, with room for record overhead.
@@ -47,6 +46,17 @@ impl<'a> PacketBuf<'a> {
 
     pub fn tailroom(&self) -> usize {
         self.buf.len() - self.end
+    }
+
+    pub(super) fn frame_mut(&mut self, before: usize, after: usize) -> Option<&mut [u8]> {
+        let start = self.start.checked_sub(before)?;
+        let end = self.end.checked_add(after)?;
+        self.buf.get_mut(start..end)
+    }
+
+    pub(super) fn include_frame(&mut self, before: usize, after: usize) {
+        self.start -= before;
+        self.end += after;
     }
 }
 
