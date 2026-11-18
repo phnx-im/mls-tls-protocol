@@ -143,28 +143,14 @@ fn unimplemented_endpoints_refuse_to_start_and_emit_nothing() -> Result<(), Conf
 #[test]
 fn configuration_rejects_unsupported_suites_and_pre_handshakes() -> Result<(), ConfigError> {
     let mut engine = Engine::new(test_config())?;
-    for suite in [
-        SessionSuite::Single(u16::MAX),
-        SessionSuite::Apq {
-            t: u16::MAX,
-            pq: 1,
-            mode: ApqMode::Confidentiality,
-        },
-        SessionSuite::Apq {
-            t: u16::MAX,
-            pq: 1,
-            mode: ApqMode::ConfidentialityAndAuthenticity,
-        },
-    ] {
-        let server = ServerProvisioning {
-            suite,
-            pre_handshake: ClientPreHandshake::None,
-        };
-        assert_eq!(
-            engine.connect(Binding::Stream, &server, Instant::from_micros(0)),
-            Err(EngineError::UnsupportedSuite(u16::MAX))
-        );
-    }
+    let server = ServerProvisioning {
+        suite: SessionSuite::Single(u16::MAX),
+        pre_handshake: ClientPreHandshake::None,
+    };
+    assert_eq!(
+        engine.connect(Binding::Stream, &server, Instant::from_micros(0)),
+        Err(EngineError::UnsupportedSuite(u16::MAX))
+    );
 
     let mut config = test_config();
     config
@@ -181,6 +167,27 @@ fn configuration_rejects_unsupported_suites_and_pre_handshakes() -> Result<(), C
         Engine::new(config),
         Err(ConfigError::UnsupportedPreHandshake { config_id: 7 })
     ));
+    Ok(())
+}
+
+#[test]
+fn configuration_rejects_both_apq_modes() -> Result<(), ConfigError> {
+    let mut engine = Engine::new(test_config())?;
+    for (mode, pq) in [
+        (ApqMode::Confidentiality, 0x004e),
+        (ApqMode::ConfidentialityAndAuthenticity, 0x0907),
+    ] {
+        let server = ServerProvisioning {
+            suite: SessionSuite::Apq { t: 1, pq, mode },
+            pre_handshake: ClientPreHandshake::None,
+        };
+        assert_eq!(
+            engine.connect(Binding::Stream, &server, Instant::from_micros(0)),
+            Err(EngineError::Config(ConfigError::UnsupportedApq))
+        );
+    }
+    assert!(engine.poll_output().is_none());
+    assert_eq!(engine.sessions().count(), 0);
     Ok(())
 }
 

@@ -106,13 +106,8 @@ impl Engine {
         if binding == Binding::Datagram {
             return Err(EngineError::UnsupportedBinding);
         }
-        let suite = match server.suite {
-            SessionSuite::Single(suite)
-            | SessionSuite::Apq {
-                t: suite,
-                pq: _,
-                mode: _,
-            } => suite,
+        let SessionSuite::Single(suite) = server.suite else {
+            return Err(ConfigError::UnsupportedApq.into());
         };
         Err(EngineError::UnsupportedSuite(suite))
     }
@@ -541,6 +536,8 @@ pub struct EngineStats {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum EngineError {
+    #[error(transparent)]
+    Config(#[from] ConfigError),
     #[error("ordered session handling is unavailable")]
     Unavailable,
     #[error("the requested binding is unsupported")]

@@ -12,6 +12,9 @@ use openmls_rust_crypto::OpenMlsRustCrypto;
 use zeroize::Zeroizing;
 
 const COMPONENT: u16 = 0x8000;
+const DEFAULT_SUITE: Ciphersuite = Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87;
+const MAX_MLS_MESSAGE_LEN: usize = 1 << 18;
+const INITIATOR_IDENTITY: &[u8] = b"initiator";
 const T_SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 const PQ_SUITE: Ciphersuite = Ciphersuite::MLS_128_MLKEM768X25519_AES256GCM_SHA384_Ed25519;
 const SUPPORTED_FORMATS: u16 = 0xf000;
@@ -35,11 +38,20 @@ impl Party {
     }
 
     fn start_commit_with_psk(&mut self, psk: Option<PreSharedKeyId>) -> ProbeResult<Vec<u8>> {
+        self.start_commit_with_leaf(LeafNodeParameters::default(), psk)
+    }
+
+    fn start_commit_with_leaf(
+        &mut self,
+        leaf: LeafNodeParameters,
+        psk: Option<PreSharedKeyId>,
+    ) -> ProbeResult<Vec<u8>> {
         let commit = self
             .group
             .commit_builder()
             .leaf_node_lifetime_policy(TIME)
             .force_self_update(true)
+            .leaf_node_parameters(leaf)
             .propose_psks(psk)?
             .load_psks(self.provider.storage())?
             .build(
@@ -141,6 +153,14 @@ fn formats(extension_type: u16) -> ProbeResult<Extension> {
 }
 
 fn start_pair(suite: Ciphersuite, psk: Option<InitialPsk<'_>>) -> ProbeResult<(Party, Party)> {
+    let (initiator, responder, _) = start_pair_with_key_package_size(suite, psk)?;
+    Ok((initiator, responder))
+}
+
+fn start_pair_with_key_package_size(
+    suite: Ciphersuite,
+    psk: Option<InitialPsk<'_>>,
+) -> ProbeResult<(Party, Party, usize)> {
     let initiator_provider = OpenMlsRustCrypto::default();
     let responder_provider = OpenMlsRustCrypto::default();
     let initiator_signer = SignatureKeyPair::new(suite.signature_algorithm())?;
@@ -164,10 +184,15 @@ fn start_pair(suite: Ciphersuite, psk: Option<InitialPsk<'_>>) -> ProbeResult<(P
             suite,
             &initiator_provider,
             &initiator_signer,
-            credential(b"initiator", &initiator_signer),
+            credential(INITIATOR_IDENTITY, &initiator_signer),
         )?;
-    let key_package =
-        KeyPackageIn::tls_deserialize_exact(key_package.key_package().tls_serialize_detached()?)?;
+    let wire = MlsMessageOut::from(key_package).to_bytes()?;
+    let key_package_size = wire.len();
+    let MlsMessageBodyIn::KeyPackage(key_package) =
+        MlsMessageIn::tls_deserialize_exact(wire)?.extract()
+    else {
+        return Err("expected a KeyPackage".into());
+    };
     for time in [NOT_BEFORE - 1, EXPIRES] {
         assert!(key_package
             .clone()
@@ -261,6 +286,7 @@ fn start_pair(suite: Ciphersuite, psk: Option<InitialPsk<'_>>) -> ProbeResult<(P
             signer: responder_signer,
             group: responder_group,
         },
+        key_package_size,
     ))
 }
 
@@ -277,26 +303,76 @@ fn current_pending_and_staged_exports_are_consumed_across_reload() -> ProbeResul
         assert!(initiator.current_export().is_err());
 
         let wire = initiator.start_commit()?;
-        let pending = initiator.pending_export()?;
-        initiator.reload()?;
-        assert!(initiator.pending_export().is_err());
-
-        let mut staged = responder.receive_commit(&wire)?;
-        let staged_export = staged.safe_export_secret(responder.provider.crypto(), COMPONENT)?;
-        assert_eq!(pending, staged_export);
-        assert!(staged
-            .safe_export_secret(responder.provider.crypto(), COMPONENT)
-            .is_err());
-        responder
-            .group
-            .merge_staged_commit(&responder.provider, *staged)?;
-        initiator.group.merge_pending_commit(&initiator.provider)?;
-        for party in [&mut initiator, &mut responder] {
-            party.reload()?;
-            assert_eq!(party.group.epoch().as_u64(), 2);
-            assert!(party.current_export().is_err());
-        }
+        confirm_update_and_reload(&mut initiator, &mut responder, &wire)?;
+        assert_eq!(initiator.group.epoch().as_u64(), 2);
     }
+    Ok(())
+}
+
+fn confirm_update_and_reload(
+    sender: &mut Party,
+    receiver: &mut Party,
+    wire: &[u8],
+) -> ProbeResult<()> {
+    let pending = sender.pending_export()?;
+    sender.reload()?;
+    assert!(sender.pending_export().is_err());
+
+    let mut staged = receiver.receive_commit(wire)?;
+    let staged_export = staged.safe_export_secret(receiver.provider.crypto(), COMPONENT)?;
+    assert_eq!(pending, staged_export);
+    assert!(staged
+        .safe_export_secret(receiver.provider.crypto(), COMPONENT)
+        .is_err());
+    receiver
+        .group
+        .merge_staged_commit(&receiver.provider, *staged)?;
+    sender.group.merge_pending_commit(&sender.provider)?;
+    for party in [&mut *sender, &mut *receiver] {
+        party.reload()?;
+        assert!(party.current_export().is_err());
+    }
+    assert_eq!(sender.group.epoch(), receiver.group.epoch());
+    Ok(())
+}
+
+#[test]
+fn default_suite_establishes_updates_and_reloads_with_full_paths() -> ProbeResult<()> {
+    assert_eq!(u16::from(DEFAULT_SUITE), 0x0907);
+    let (mut initiator, mut responder, key_package_size) =
+        start_pair_with_key_package_size(DEFAULT_SUITE, None)?;
+    assert_eq!(initiator.group.ciphersuite(), DEFAULT_SUITE);
+    assert_eq!(responder.group.ciphersuite(), DEFAULT_SUITE);
+    assert_eq!(initiator.current_export()?, responder.current_export()?);
+    for party in [&mut initiator, &mut responder] {
+        party.reload()?;
+        assert!(party.current_export().is_err());
+    }
+
+    let initiator_commit = initiator.start_commit()?;
+    confirm_update_and_reload(&mut initiator, &mut responder, &initiator_commit)?;
+    let responder_commit = responder.start_commit()?;
+    confirm_update_and_reload(&mut responder, &mut initiator, &responder_commit)?;
+    assert_eq!(initiator.group.epoch().as_u64(), 3);
+    let full_path_size = initiator_commit.len().max(responder_commit.len());
+    assert!(key_package_size <= MAX_MLS_MESSAGE_LEN);
+    assert!(full_path_size <= MAX_MLS_MESSAGE_LEN);
+
+    // A long BasicCredential identity changes its MLS vector length prefix from one byte to four.
+    let identity_size = MAX_MLS_MESSAGE_LEN - initiator_commit.len() + INITIATOR_IDENTITY.len() - 3;
+    let leaf = LeafNodeParameters::builder()
+        .with_credential_with_key(credential(&vec![b'i'; identity_size], &initiator.signer))
+        .build();
+    let maximum_commit = initiator.start_commit_with_leaf(leaf, None)?;
+    assert_eq!(maximum_commit.len(), MAX_MLS_MESSAGE_LEN);
+    confirm_update_and_reload(&mut initiator, &mut responder, &maximum_commit)?;
+    assert_eq!(initiator.group.epoch().as_u64(), 4);
+    eprintln!(
+        "0x0907 MLSMessage bytes: KeyPackage {}, full-path Commit {}, maximum Commit {}",
+        key_package_size,
+        full_path_size,
+        maximum_commit.len()
+    );
     Ok(())
 }
 

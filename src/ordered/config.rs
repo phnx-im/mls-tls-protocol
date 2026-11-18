@@ -38,7 +38,7 @@ pub enum SessionSuite {
     /// The amortized PQ combiner (profile "Use with the amortized PQ
     /// combiner"): a T group with a traditional suite and a PQ group with a
     /// post-quantum one. Record keys and the binding's values come from the
-    /// T group.
+    /// T group. Provisioning this variant returns [`ConfigError::UnsupportedApq`].
     Apq { t: u16, pq: u16, mode: ApqMode },
 }
 
@@ -303,6 +303,8 @@ pub enum ConfigError {
     ResponderBoundTooShort,
     #[error("no signing keys were configured")]
     NoSigner,
+    #[error("APQ session configurations are unsupported")]
+    UnsupportedApq,
     /// An APQ suite whose PQ signature scheme has no `pq_signer`.
     #[error("the APQ suite needs a separate PQ signer")]
     MissingPqSigner,
